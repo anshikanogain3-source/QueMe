@@ -1,0 +1,38 @@
+.role-layout {
+  min-height: 100vh;
+  padding: 24px clamp(20px, 5vw, 64px);
+  background: #f6f5f1;
+  color: #1c1b17;
+}
+
+.role-layout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 48px;
+  border-bottom: 1px solid #e2e0d8;
+  font-size: 0.84rem;
+}
+
+.role-layout-brand {
+  color: #0b423d;
+  font-family: Georgia, serif;
+  font-size: 1.25rem;
+  text-decoration: none;
+}
+
+.role-layout-content {
+  width: min(920px, 100%);
+  margin: 64px auto;
+}
+
+.role-layout-content h1 {
+  font-family: Georgia, serif;
+  font-weight: 500;
+}
+
+.role-layout-content p {
+  color: #6f6b60;
+  line-height: 1.6;
+}

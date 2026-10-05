@@ -1,0 +1,29 @@
+{
+  "name": "queme-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite frontend --config frontend/vite.config.js --host 0.0.0.0",
+    "build": "vite build frontend --config frontend/vite.config.js",
+    "preview": "vite preview frontend --config frontend/vite.config.js",
+    "test": "node --test frontend/**/*.test.js",
+    "typecheck:contracts": "tsc --project tsconfig.contracts.json",
+    "api:dev": "uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000",
+    "worker:audio": "python -m workers.audio_analysis.worker"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.117.2",
+    "@vitejs/plugin-react": "6.1.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-router-dom": "7.18.4",
+    "vite": "8.3.0"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3"
+  }
+}

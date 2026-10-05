@@ -1,0 +1,124 @@
+openapi: 3.1.0
+info:
+  title: QueMe Foundation API
+  version: 0.1.0
+  description: Initial health and internally authorized audio job submission contract. Audio processing is not configured.
+servers:
+  - url: /api/v1
+paths:
+  /audio-jobs:
+    post:
+      summary: Submit an audio analysis job from a trusted internal service
+      security:
+        - internalToken: []
+      parameters:
+        - in: header
+          name: X-Request-ID
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: X-Internal-Token
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AudioJobSubmission'
+      responses:
+        '202':
+          description: Job queued or existing idempotent request returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioJobAccepted'
+        '401':
+          $ref: '#/components/responses/ApiError'
+        '409':
+          $ref: '#/components/responses/ApiError'
+        '422':
+          $ref: '#/components/responses/ApiError'
+        '503':
+          $ref: '#/components/responses/ApiError'
+  /health:
+    get:
+      summary: Process liveness
+      responses:
+        '200':
+          description: API process is running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /ready:
+    get:
+      summary: Dependency readiness
+      responses:
+        '200':
+          description: Database is reachable
+        '503':
+          description: Database is not configured or unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorEnvelope'
+components:
+  securitySchemes:
+    internalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+  schemas:
+    ApiErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string, format: uuid }
+            details:
+              type: array
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field: { type: string }
+                  message: { type: string }
+    AudioJobSubmission:
+      type: object
+      additionalProperties: false
+      required: [session_id, storage_object_path, idempotency_key]
+      properties:
+        session_id: { type: string, format: uuid }
+        storage_object_path: { type: string, minLength: 1, maxLength: 512 }
+        idempotency_key: { type: string, minLength: 8, maxLength: 128 }
+    AudioJobAccepted:
+      type: object
+      required: [id, status, attempt_count, max_attempts, request_id]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, retrying, succeeded, failed] }
+        attempt_count: { type: integer }
+        max_attempts: { type: integer }
+        request_id: { type: string, format: uuid }
+    HealthResponse:
+      type: object
+      required: [status, request_id]
+      properties:
+        status: { type: string, enum: [ok] }
+        request_id: { type: string, format: uuid }
+  responses:
+    ApiError:
+      description: Standardized API error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorEnvelope'

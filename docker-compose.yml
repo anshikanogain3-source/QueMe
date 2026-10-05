@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_DB: queme
+      POSTGRES_USER: queme
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+    volumes:
+      - queme-postgres:/var/lib/postgresql/data
+      - ./deploy/postgres-init/00-local-roles.sql:/docker-entrypoint-initdb.d/00-local-roles.sql:ro
+      - ./supabase/migrations/202610030001_audio_analysis_jobs.sql:/docker-entrypoint-initdb.d/10-audio-jobs.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queme -d queme"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      QUEME_DATABASE_URL: postgresql://queme:${POSTGRES_PASSWORD}@postgres:5432/queme
+      QUEME_INTERNAL_API_TOKEN: ${QUEME_INTERNAL_API_TOKEN:-}
+      QUEME_CORS_ORIGINS: '["http://localhost:8080"]'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: /api/v1
+    ports:
+      - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  audio-worker:
+    profiles: ["audio"]
+    build:
+      context: .
+      dockerfile: workers/Dockerfile
+    environment:
+      QUEME_DATABASE_URL: postgresql://queme:${POSTGRES_PASSWORD}@postgres:5432/queme
+      QUEME_AUDIO_PROCESSOR: ${QUEME_AUDIO_PROCESSOR:-}
+      QUEME_AUDIO_JOB_MAX_ATTEMPTS: 4
+      QUEME_AUDIO_JOB_TIMEOUT_SECONDS: 300
+      QUEME_AUDIO_JOB_LEASE_SECONDS: 360
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  queme-postgres:

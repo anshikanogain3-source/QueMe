@@ -1,0 +1,51 @@
+.student-dashboard {
+  min-height: 100vh;
+  background: #f6f5f1;
+  color: #1c1b17;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.student-dashboard__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px clamp(24px, 6vw, 72px);
+  border-bottom: 1px solid #e2e0d8;
+}
+
+.student-dashboard__brand {
+  color: inherit;
+  font: 600 1.25rem "Source Serif 4", Georgia, serif;
+  text-decoration: none;
+}
+
+.student-dashboard__logout {
+  border: 1px solid #0f5c55;
+  border-radius: 6px;
+  background: transparent;
+  color: #0f5c55;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+.student-dashboard__empty {
+  max-width: 640px;
+  margin: 14vh auto;
+  padding: 32px;
+}
+
+.student-dashboard__empty > p {
+  margin: 0 0 8px;
+  color: #0f5c55;
+  font-size: .8rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.student-dashboard__empty h1 {
+  font: 600 clamp(2rem, 5vw, 3.25rem) "Source Serif 4", Georgia, serif;
+  margin: 0 0 16px;
+}
+
+.student-dashboard__empty span { color: #6f6b60; line-height: 1.6; }

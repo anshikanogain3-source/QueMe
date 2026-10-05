@@ -1,0 +1,88 @@
+/* QueMe application shell: sidebar on wide screens, drawer on narrow. */
+
+.qm-appshell { display: flex; min-height: 100vh; background: var(--qm-bg); }
+
+.qm-appshell__sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--qm-nav-w);
+  display: flex;
+  flex-direction: column;
+  gap: var(--qm-space-6);
+  padding: var(--qm-space-6) var(--qm-space-5);
+  background: var(--qm-surface);
+  border-right: 1px solid var(--qm-border);
+  z-index: var(--qm-z-nav);
+}
+
+.qm-appshell__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--qm-space-3);
+  font-family: var(--qm-font-head);
+  font-size: 1.15rem;
+  color: var(--qm-ink);
+  text-decoration: none;
+}
+.qm-appshell__brand:hover { text-decoration: none; }
+.qm-appshell__mark { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--qm-accent), var(--qm-accent-strong)); }
+
+.qm-appnav { flex: 1; }
+.qm-appnav__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.qm-appnav__item {
+  display: flex;
+  align-items: center;
+  gap: var(--qm-space-3);
+  width: 100%;
+  border: none;
+  background: transparent;
+  border-radius: var(--qm-radius-sm);
+  color: var(--qm-ink-soft);
+  font: inherit;
+  font-size: var(--qm-text-sm);
+  font-weight: 600;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color var(--qm-dur-1) var(--qm-ease), color var(--qm-dur-1) var(--qm-ease);
+}
+.qm-appnav__item:hover { background: var(--qm-surface-2); color: var(--qm-ink); text-decoration: none; }
+.qm-appnav__item.is-active { background: var(--qm-accent-soft); color: var(--qm-accent-strong); }
+.qm-appnav__icon { width: 18px; text-align: center; font-size: 0.95rem; }
+.qm-appnav__label { flex: 1; text-align: left; }
+
+.qm-appshell__user { display: flex; align-items: center; gap: var(--qm-space-3); padding-top: var(--qm-space-5); border-top: 1px solid var(--qm-border); }
+.qm-appshell__avatar { display: grid; place-items: center; width: 38px; height: 38px; border-radius: var(--qm-radius-pill); background: var(--qm-accent); color: var(--qm-accent-contrast); font-size: var(--qm-text-xs); font-weight: 700; flex-shrink: 0; }
+.qm-appshell__user-meta { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.qm-appshell__user-name { font-size: var(--qm-text-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qm-appshell__user-role { font-size: var(--qm-text-xs); color: var(--qm-ink-soft); }
+
+.qm-appshell__main { flex: 1; margin-left: var(--qm-nav-w); display: flex; flex-direction: column; min-width: 0; }
+
+.qm-appshell__topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  min-height: var(--qm-topbar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--qm-space-4);
+  padding: var(--qm-space-3) clamp(var(--qm-space-4), 3vw, var(--qm-space-8));
+  background: rgba(246, 245, 241, 0.86);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--qm-border);
+}
+.qm-appshell__topbar-left { display: flex; align-items: center; gap: var(--qm-space-3); min-width: 0; }
+.qm-appshell__menu { display: none; }
+.qm-appshell__title { font-size: 1.05rem; font-family: var(--qm-font-head); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qm-appshell__subtitle { font-size: var(--qm-text-xs); color: var(--qm-ink-soft); }
+.qm-appshell__actions { display: flex; align-items: center; gap: var(--qm-space-3); }
+
+.qm-appshell__content { flex: 1; padding: clamp(var(--qm-space-5), 3vw, var(--qm-space-10)) clamp(var(--qm-space-4), 3vw, var(--qm-space-8)); }
+
+@media (max-width: 1024px) {
+  .qm-appshell__sidebar { display: none; }
+  .qm-appshell__main { margin-left: 0; }
+  .qm-appshell__menu { display: inline-flex; }
+}

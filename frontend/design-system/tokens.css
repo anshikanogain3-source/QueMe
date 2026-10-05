@@ -1,0 +1,174 @@
+/* QueMe design tokens
+   Single source of truth for the visual direction:
+   warm off-white ground, deep teal primary, charcoal ink, muted secondary,
+   restrained amber for attention. All component styles read from these. */
+
+:root {
+  /* ---- Color: surfaces & lines ---------------------------------------- */
+  --qm-bg: #f6f5f1;
+  --qm-bg-sunken: #efece4;
+  --qm-surface: #ffffff;
+  --qm-surface-2: #faf9f5;
+  --qm-border: #e4e1d8;
+  --qm-border-strong: #cfcabd;
+
+  /* ---- Color: ink ----------------------------------------------------- */
+  --qm-ink: #1c1b17;
+  --qm-ink-2: #4a473f;
+  --qm-ink-soft: #6f6b60;
+  --qm-ink-faint: #9b9689;
+
+  /* ---- Color: brand + states ----------------------------------------- */
+  --qm-accent: #0f5c55;
+  --qm-accent-strong: #0b423d;
+  --qm-accent-soft: #e3eeec;
+  --qm-accent-contrast: #ffffff;
+
+  --qm-amber: #a5711f;
+  --qm-amber-strong: #7f5512;
+  --qm-amber-soft: #f4e9d7;
+
+  --qm-success: #2e6b4f;
+  --qm-success-soft: #e2efe8;
+  --qm-danger: #8a4a3c;
+  --qm-danger-strong: #6f382c;
+  --qm-danger-soft: #f6e3df;
+  --qm-info: #35617a;
+  --qm-info-soft: #e3edf3;
+
+  --qm-ring: rgba(15, 92, 85, 0.30);
+
+  /* ---- Typography ----------------------------------------------------- */
+  --qm-font-head: "Source Serif 4", "Iowan Old Style", "Sitka Text", Georgia, serif;
+  --qm-font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --qm-font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --qm-text-display: 3.5rem;
+  --qm-text-h1: 2.4rem;
+  --qm-text-h2: 1.65rem;
+  --qm-text-h3: 1.14rem;
+  --qm-text-body: 0.95rem;
+  --qm-text-sm: 0.84rem;
+  --qm-text-xs: 0.75rem;
+
+  --qm-lh-tight: 1.08;
+  --qm-lh-snug: 1.3;
+  --qm-lh-normal: 1.5;
+  --qm-lh-relaxed: 1.65;
+
+  --qm-track-eyebrow: 0.05em;
+
+  /* ---- Spacing (4px base) -------------------------------------------- */
+  --qm-space-1: 4px;
+  --qm-space-2: 8px;
+  --qm-space-3: 12px;
+  --qm-space-4: 16px;
+  --qm-space-5: 20px;
+  --qm-space-6: 24px;
+  --qm-space-8: 32px;
+  --qm-space-10: 40px;
+  --qm-space-12: 48px;
+  --qm-space-16: 64px;
+  --qm-space-24: 96px;
+
+  /* ---- Radius --------------------------------------------------------- */
+  --qm-radius-sm: 6px;
+  --qm-radius-md: 8px;
+  --qm-radius-lg: 8px;
+  --qm-radius-xl: 10px;
+  --qm-radius-pill: 999px;
+
+  /* ---- Shadows (restrained) ------------------------------------------ */
+  --qm-shadow-xs: 0 1px 2px rgba(28, 27, 23, 0.05);
+  --qm-shadow-sm: 0 1px 2px rgba(28, 27, 23, 0.05), 0 4px 12px rgba(28, 27, 23, 0.05);
+  --qm-shadow-md: 0 8px 24px rgba(28, 27, 23, 0.09);
+  --qm-shadow-lg: 0 18px 48px rgba(28, 27, 23, 0.14);
+
+  /* ---- Motion (subtle, 150-250ms) ------------------------------------ */
+  --qm-dur-1: 150ms;
+  --qm-dur-2: 200ms;
+  --qm-dur-3: 250ms;
+  --qm-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --qm-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ---- Layout --------------------------------------------------------- */
+  --qm-nav-w: 250px;
+  --qm-topbar-h: 64px;
+  --qm-content: 1180px;
+  --qm-content-narrow: 760px;
+
+  /* ---- Layers --------------------------------------------------------- */
+  --qm-z-nav: 20;
+  --qm-z-drawer: 60;
+  --qm-z-dialog: 70;
+  --qm-z-toast: 80;
+  --qm-z-tooltip: 90;
+}
+
+@media (max-width: 640px) {
+  :root {
+    --qm-text-display: 2.35rem;
+    --qm-text-h1: 1.9rem;
+    --qm-text-h2: 1.45rem;
+  }
+}
+
+/* Design-system scope: opt in with class="qm". */
+.qm {
+  background: var(--qm-bg);
+  color: var(--qm-ink);
+  font-family: var(--qm-font-body);
+  font-size: var(--qm-text-body);
+  line-height: var(--qm-lh-normal);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.qm *,
+.qm *::before,
+.qm *::after {
+  box-sizing: border-box;
+}
+
+.qm h1, .qm h2, .qm h3, .qm h4 {
+  font-family: var(--qm-font-head);
+  font-weight: 500;
+  line-height: var(--qm-lh-snug);
+  margin: 0;
+  color: var(--qm-ink);
+}
+
+.qm p { margin: 0; }
+
+.qm a { color: var(--qm-accent-strong); text-decoration: none; }
+.qm a:hover { text-decoration: underline; }
+
+.qm :focus-visible {
+  outline: 2px solid var(--qm-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.qm-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Respect reduced-motion: keep meaning, drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  .qm *,
+  .qm *::before,
+  .qm *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
