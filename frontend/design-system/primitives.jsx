@@ -698,8 +698,449 @@ export function useToast() {
   return ctx;
 }
 
+/* ------------------------------------------------------------------ */
+/* AppShell + AppNav                                                   */
+/* ------------------------------------------------------------------ */
 
+export function AppNav({ items = [], currentPath, onNavigate, className }) {
+  return (
+    <nav className={cx("qm-appnav", className)} aria-label="Application">
+      <ul className="qm-appnav__list">
+        {items.map((item) => {
+          const active = currentPath
+            ? currentPath === item.href
+            : item.active;
+          return (
+            <li key={item.href ?? item.label}>
+              {item.href ? (
+                <a
+                  href={item.href}
+                  className={cx("qm-appnav__item", active && "is-active")}
+                  aria-current={active ? "page" : undefined}
+                >
+                  {item.icon && <span className="qm-appnav__icon" aria-hidden="true">{item.icon}</span>}
+                  <span className="qm-appnav__label">{item.label}</span>
+                  {item.badge != null && <Badge size="sm" tone={active ? "accent" : "neutral"}>{item.badge}</Badge>}
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  className={cx("qm-appnav__item", active && "is-active")}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => onNavigate?.(item)}
+                >
+                  {item.icon && <span className="qm-appnav__icon" aria-hidden="true">{item.icon}</span>}
+                  <span className="qm-appnav__label">{item.label}</span>
+                  {item.badge != null && <Badge size="sm" tone={active ? "accent" : "neutral"}>{item.badge}</Badge>}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
 
+export function AppShell({
+  nav = [],
+  currentPath,
+  onNavigate,
+  user,
+  onLogout,
+  topbarTitle,
+  topbarSubtitle,
+  topbarActions,
+  mobileNavItems,
+  children,
+  className,
+}) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const initials = user?.name
+    ? user.name.split(" ").slice(0, 2).map((n) => n[0]).join("").toUpperCase()
+    : "?";
 
+  return (
+    <div className={cx("qm qm-appshell", className)}>
+      {/* Sidebar (≥1024px) */}
+      <aside className="qm-appshell__sidebar" aria-label="Sidebar navigation">
+        <a className="qm-appshell__brand" href="/">
+          <span className="qm-appshell__mark" aria-hidden="true" />
+          <span>QueMe</span>
+        </a>
+        <AppNav items={nav} currentPath={currentPath} onNavigate={onNavigate} />
+        {user && (
+          <div className="qm-appshell__user">
+            <span className="qm-appshell__avatar" aria-hidden="true">{initials}</span>
+            <div className="qm-appshell__user-meta">
+              <span className="qm-appshell__user-name">{user.name || user.email}</span>
+              <span className="qm-appshell__user-role">{user.role}</span>
+            </div>
+            <IconButton label="Log out" size="sm" onClick={onLogout} title="Log out">✕</IconButton>
+          </div>
+        )}
+      </aside>
 
+      {/* Mobile nav drawer */}
+      {drawerOpen && (
+        <Drawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          side="left"
+          title="Navigation"
+        >
+          <AppNav items={nav} currentPath={currentPath} onNavigate={(item) => { onNavigate?.(item); setDrawerOpen(false); }} />
+          {user && (
+            <div className="qm-appshell__user" style={{ marginTop: "auto", paddingTop: "var(--qm-space-5)", borderTop: "1px solid var(--qm-border)" }}>
+              <span className="qm-appshell__avatar" aria-hidden="true">{initials}</span>
+              <div className="qm-appshell__user-meta">
+                <span className="qm-appshell__user-name">{user.name || user.email}</span>
+                <span className="qm-appshell__user-role">{user.role}</span>
+              </div>
+            </div>
+          )}
+          {onLogout && (
+            <Button variant="secondary" fullWidth onClick={() => { onLogout(); setDrawerOpen(false); }} style={{ marginTop: "var(--qm-space-4)" }}>Log out</Button>
+          )}
+        </Drawer>
+      )}
 
+      {/* Main area */}
+      <div className="qm-appshell__main">
+        <header className="qm-appshell__topbar">
+          <div className="qm-appshell__topbar-left">
+            <IconButton
+              label="Open navigation"
+              className="qm-appshell__menu"
+              onClick={() => setDrawerOpen(true)}
+            >☰</IconButton>
+            <div>
+              {topbarTitle && <p className="qm-appshell__title">{topbarTitle}</p>}
+              {topbarSubtitle && <p className="qm-appshell__subtitle">{topbarSubtitle}</p>}
+            </div>
+          </div>
+          {topbarActions && <div className="qm-appshell__actions">{topbarActions}</div>}
+        </header>
+
+        <main className="qm-appshell__content">
+          {children}
+        </main>
+
+        {/* Mobile bottom pill nav */}
+        {(mobileNavItems ?? nav).length > 0 && (
+          <nav className="qm-pilotnav" aria-label="Mobile navigation">
+            {(mobileNavItems ?? nav).slice(0, 5).map((item) => {
+              const active = currentPath
+                ? currentPath === item.href
+                : item.active;
+              return (
+                <button
+                  key={item.href ?? item.label}
+                  type="button"
+                  className={cx("qm-pilotnav__item", active && "is-active")}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => item.href ? (window.location.href = item.href) : onNavigate?.(item)}
+                >
+                  {item.icon && <span className="qm-pilotnav__icon" aria-hidden="true">{item.icon}</span>}
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* RadioGroup                                                          */
+/* ------------------------------------------------------------------ */
+
+export function RadioGroup({ name, options = [], value, onChange, layout = "column", className }) {
+  return (
+    <div className={cx("qm-radiogroup", layout === "row" && "qm-radiogroup--row", className)} role="group">
+      {options.map((opt) => {
+        const id = `${name}-${opt.value}`;
+        return (
+          <label key={opt.value} className="qm-radio" htmlFor={id}>
+            <input
+              id={id}
+              type="radio"
+              name={name}
+              value={opt.value}
+              checked={value === opt.value}
+              onChange={() => onChange?.(opt.value)}
+            />
+            <span className="qm-radio__dot" aria-hidden="true" />
+            <span>
+              <span className="qm-radio__label">{opt.label}</span>
+              {opt.description && <span className="qm-radio__desc">{opt.description}</span>}
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Toggle                                                              */
+/* ------------------------------------------------------------------ */
+
+export function Toggle({ label, checked, onChange, id: propId, className }) {
+  const autoId = useId();
+  const id = propId || autoId;
+  return (
+    <label className={cx("qm-toggle", className)} htmlFor={id}>
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange?.(e.target.checked)}
+      />
+      <span className="qm-toggle__track" aria-hidden="true">
+        <span className="qm-toggle__thumb" />
+      </span>
+      {label && <span className="qm-toggle__label">{label}</span>}
+    </label>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Breadcrumb                                                          */
+/* ------------------------------------------------------------------ */
+
+export function Breadcrumb({ crumbs = [], className }) {
+  return (
+    <nav aria-label="Breadcrumb" className={cx("qm-breadcrumb", className)}>
+      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {crumbs.map((crumb, i) => {
+          const isLast = i === crumbs.length - 1;
+          return (
+            <li key={crumb.label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              {i > 0 && <span className="qm-breadcrumb__sep" aria-hidden="true">›</span>}
+              {isLast
+                ? <span className="qm-breadcrumb__current" aria-current="page">{crumb.label}</span>
+                : <a className="qm-breadcrumb__link" href={crumb.href}>{crumb.label}</a>
+              }
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Steps                                                               */
+/* ------------------------------------------------------------------ */
+
+export function Steps({ steps: stepList = [], current = 0, className }) {
+  return (
+    <ol className={cx("qm-steps", className)} aria-label="Progress">
+      {stepList.map((step, i) => {
+        const done = i < current;
+        const active = i === current;
+        return (
+          <li
+            key={step}
+            className={cx("qm-step", done && "qm-step--done", active && "qm-step--active")}
+            aria-current={active ? "step" : undefined}
+          >
+            <span className="qm-step__circle" aria-hidden="true">{done ? "✓" : i + 1}</span>
+            <span className="qm-step__label">{step}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* AudioPlayer                                                         */
+/* ------------------------------------------------------------------ */
+
+export function AudioPlayer({ title, src, className }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [rate, setRate] = useState(1);
+
+  const fmt = (s) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  };
+
+  function toggle() {
+    const el = audioRef.current;
+    if (!el) return;
+    if (playing) { el.pause(); } else { el.play(); }
+    setPlaying(!playing);
+  }
+
+  if (!src) {
+    return (
+      <div className={cx("qm-audioplayer qm-audioplayer--empty", className)}>
+        <p className="qm-muted" style={{ margin: 0 }}>No audio recording available yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cx("qm-audioplayer", className)}>
+      <audio
+        ref={audioRef}
+        src={src}
+        onTimeUpdate={(e) => setCurrent(e.target.currentTime)}
+        onLoadedMetadata={(e) => setDuration(e.target.duration)}
+        onEnded={() => setPlaying(false)}
+        onVolumeChange={(e) => setVolume(e.target.volume)}
+      />
+      <div className="qm-audioplayer__head">
+        <IconButton
+          label={playing ? "Pause" : "Play"}
+          variant="primary"
+          size="md"
+          onClick={toggle}
+        >{playing ? "⏸" : "▶"}</IconButton>
+        <div className="qm-audioplayer__meta">
+          {title && <span className="qm-audioplayer__title">{title}</span>}
+          <span className="qm-audioplayer__time">{fmt(current)} / {fmt(duration)}</span>
+        </div>
+        <div className="qm-audioplayer__rate">
+          {[0.75, 1, 1.25, 1.5].map((r) => (
+            <button
+              key={r}
+              type="button"
+              className={cx("qm-rate", rate === r && "is-active")}
+              onClick={() => { setRate(r); if (audioRef.current) audioRef.current.playbackRate = r; }}
+            >{r}×</button>
+          ))}
+        </div>
+      </div>
+      <Waveform progress={duration ? current / duration : 0} />
+      <div className="qm-audioplayer__foot">
+        <div className="qm-audioplayer__volume">
+          <input
+            type="range" min={0} max={1} step={0.05} value={volume}
+            aria-label="Volume"
+            onChange={(e) => { const v = parseFloat(e.target.value); setVolume(v); if (audioRef.current) audioRef.current.volume = v; }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Waveform                                                            */
+/* ------------------------------------------------------------------ */
+
+export function Waveform({ bars = 60, heights, progress = 0, tone = "accent", onClick, className }) {
+  const BAR_W = 3;
+  const BAR_GAP = 2;
+  const H = 48;
+
+  const defaultHeights = React.useMemo(() => {
+    if (heights) return heights;
+    // Deterministic pseudo-random heights so waveform looks consistent
+    return Array.from({ length: bars }, (_, i) => {
+      const seed = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+      return 0.2 + 0.8 * Math.abs(seed - Math.floor(seed));
+    });
+  }, [bars, heights]);
+
+  const totalBars = defaultHeights.length;
+  const playedCount = Math.round(progress * totalBars);
+
+  return (
+    <div
+      className={cx("qm-waveform", className)}
+      role="progressbar"
+      aria-valuenow={Math.round(progress * 100)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label="Audio progress"
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(e); } } : undefined}
+      style={{ height: H }}
+    >
+      <div className="qm-waveform__bars">
+        {defaultHeights.map((h, i) => (
+          <span
+            key={i}
+            className={cx("qm-waveform__bar", i < playedCount && "is-played", tone === "amber" && "qm-waveform__bar--amber")}
+            style={{
+              width: BAR_W,
+              height: Math.max(4, h * H),
+              marginRight: i < totalBars - 1 ? BAR_GAP : 0,
+              flexShrink: 0,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* TranscriptPanel                                                     */
+/* ------------------------------------------------------------------ */
+
+export function TranscriptPanel({ segments = [], activeId, onSegmentClick, className }) {
+  return (
+    <div className={cx("qm-transcript", className)}>
+      <div className="qm-transcript__head">
+        <h3 className="qm-transcript__title">Transcript</h3>
+        {segments.length > 0 && <Badge tone="neutral" size="sm">{segments.length} segments</Badge>}
+      </div>
+      {segments.length === 0 ? (
+        <p className="qm-muted qm-transcript__empty">Transcript will appear here as you speak.</p>
+      ) : (
+        <ul className="qm-transcript__list">
+          {segments.map((seg) => (
+            <li key={seg.id}>
+              <button
+                type="button"
+                className={cx("qm-transcript__seg", seg.id === activeId && "is-active")}
+                onClick={() => onSegmentClick?.(seg)}
+              >
+                <span className="qm-transcript__meta">
+                  <span className="qm-transcript__speaker">{seg.speaker || "You"}</span>
+                  <span className="qm-transcript__time">{seg.time}</span>
+                </span>
+                <span className="qm-transcript__text">{seg.text}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* InterviewControls                                                   */
+/* ------------------------------------------------------------------ */
+
+export function InterviewControls({ isLive = false, statusText, actions, className }) {
+  return (
+    <div className={cx("qm-controls", className)}>
+      <div className="qm-controls__status">
+        <span
+          className={cx("qm-controls__pulse", isLive && "is-live")}
+          aria-hidden="true"
+        />
+        <span className="qm-controls__status-text">
+          {statusText || (isLive ? "Recording…" : "Ready")}
+        </span>
+      </div>
+      {actions && <div className="qm-controls__actions">{actions}</div>}
+    </div>
+  );
+}

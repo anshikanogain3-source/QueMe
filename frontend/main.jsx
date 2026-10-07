@@ -5,8 +5,9 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from
 import AuthPage, { ForgotPasswordPage, ResetPasswordPage } from "./AuthPage.jsx";
 import UserDashboard from "./UserDashboard.jsx";
 import LandingPage from "./screens/LandingPage.jsx";
-import { AdminLayout, CoordinatorLayout, RequireRole, StudentLayout, TeacherLayout } from "./routing/RoleLayouts.jsx";
-import { AdminPlaceholder, CoordinatorPlaceholder, TeacherPlaceholder } from "./routing/RolePages.jsx";
+import { RequireRole, StudentLayout, TeacherLayout, CoordinatorLayout } from "./routing/RoleLayouts.jsx";
+import AdminRoutes from "./routing/RolePages.jsx";
+import * as AdminScreens from "./screens/AdminScreens.jsx";
 import { getRoleHome } from "./routing/roles.js";
 import { supabase } from "./services/supabaseClient.js";
 
@@ -92,17 +93,32 @@ function App() {
       </Route>
       <Route element={<RequireRole session={session} allowedRole="teacher" />}>
         <Route element={<TeacherLayout />}>
-          <Route path="/teacher" element={<TeacherPlaceholder onLogout={handleLogout} />} />
+          <Route path="/teacher" element={<AdminScreens.TeacherScreen onLogout={handleLogout} />} />
         </Route>
       </Route>
       <Route element={<RequireRole session={session} allowedRole="coordinator" />}>
         <Route element={<CoordinatorLayout />}>
-          <Route path="/coordinator" element={<CoordinatorPlaceholder onLogout={handleLogout} />} />
+          <Route path="/coordinator" element={<AdminScreens.CoordinatorScreen onLogout={handleLogout} />} />
         </Route>
       </Route>
       <Route element={<RequireRole session={session} allowedRole="admin" />}>
-        <Route element={<AdminLayout />}>
-          <Route path="/admin" element={<AdminPlaceholder onLogout={handleLogout} />} />
+        <Route element={<AdminRoutes />}>
+          <Route path="/admin" element={<AdminScreens.AdminDashboard onLogout={handleLogout} />} />
+          <Route path="/admin/accounts" element={<AdminScreens.AdminAccounts onLogout={handleLogout} />} />
+          <Route path="/admin/invitations" element={<AdminScreens.AdminInvitations onLogout={handleLogout} />} />
+          <Route path="/admin/academic" element={<AdminScreens.AdminAcademic onLogout={handleLogout} />} />
+          <Route path="/admin/academic/departments" element={<AdminScreens.AdminDepartments onLogout={handleLogout} />} />
+          <Route path="/admin/academic/courses" element={<AdminScreens.AdminCourses onLogout={handleLogout} />} />
+          <Route path="/admin/academic/semesters" element={<AdminScreens.AdminSemesters onLogout={handleLogout} />} />
+          <Route path="/admin/academic/batches" element={<AdminScreens.AdminBatches onLogout={handleLogout} />} />
+          <Route path="/admin/academic/classes" element={<AdminScreens.AdminClasses onLogout={handleLogout} />} />
+          <Route path="/admin/people" element={<AdminScreens.AdminPeople onLogout={handleLogout} />} />
+          <Route path="/admin/people/enrollments" element={<AdminScreens.AdminEnrollments onLogout={handleLogout} />} />
+          <Route path="/admin/people/teacher-assignments" element={<AdminScreens.AdminTeacherAssignments onLogout={handleLogout} />} />
+          <Route path="/admin/people/coordinator-assignments" element={<AdminScreens.AdminCoordinatorAssignments onLogout={handleLogout} />} />
+          <Route path="/admin/interviews" element={<AdminScreens.AdminInterviews onLogout={handleLogout} />} />
+          <Route path="/admin/interviews/assignments" element={<AdminScreens.AdminInterviewAssignments onLogout={handleLogout} />} />
+          <Route path="/admin/audit" element={<AdminScreens.AdminAuditLog onLogout={handleLogout} />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to={isAuthenticated ? (getRoleHome(session.role) || "/login") : "/login"} replace />} />

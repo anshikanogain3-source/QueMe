@@ -1,10 +1,15 @@
 services:
   postgres:
+    # Local PostgreSQL is optional. Start it explicitly with:
+    #   docker compose --profile local up postgres
+    # The stack uses Supabase (QUEME_DATABASE_URL in the root .env) by default.
+    profiles: ["local"]
     image: postgres:16.4-alpine
     environment:
       POSTGRES_DB: queme
       POSTGRES_USER: queme
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      # Required only when the "local" profile is enabled (unset in .env by default).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - queme-postgres:/var/lib/postgresql/data
       - ./deploy/postgres-init/00-local-roles.sql:/docker-entrypoint-initdb.d/00-local-roles.sql:ro
@@ -20,12 +25,14 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
-      QUEME_DATABASE_URL: postgresql://queme:${POSTGRES_PASSWORD}@postgres:5432/queme
+      QUEME_DATABASE_URL: "${QUEME_DATABASE_URL}"
       QUEME_INTERNAL_API_TOKEN: ${QUEME_INTERNAL_API_TOKEN:-}
       QUEME_CORS_ORIGINS: '["http://localhost:8080"]'
-    depends_on:
-      postgres:
-        condition: service_healthy
+      QUEME_SUPABASE_URL: ${QUEME_SUPABASE_URL:-}
+      QUEME_SUPABASE_ANON_KEY: ${QUEME_SUPABASE_ANON_KEY:-}
+      QUEME_SUPABASE_SERVICE_ROLE_KEY: ${QUEME_SUPABASE_SERVICE_ROLE_KEY:-}
+    ports:
+      - "8001:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
       interval: 10s
@@ -39,6 +46,8 @@ services:
       dockerfile: deploy/Dockerfile.frontend
       args:
         VITE_API_BASE_URL: /api/v1
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:-}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY:-}
     ports:
       - "8080:8080"
     depends_on:
@@ -51,14 +60,11 @@ services:
       context: .
       dockerfile: workers/Dockerfile
     environment:
-      QUEME_DATABASE_URL: postgresql://queme:${POSTGRES_PASSWORD}@postgres:5432/queme
+      QUEME_DATABASE_URL: "${QUEME_DATABASE_URL}"
       QUEME_AUDIO_PROCESSOR: ${QUEME_AUDIO_PROCESSOR:-}
       QUEME_AUDIO_JOB_MAX_ATTEMPTS: 4
       QUEME_AUDIO_JOB_TIMEOUT_SECONDS: 300
       QUEME_AUDIO_JOB_LEASE_SECONDS: 360
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
   queme-postgres:

@@ -8,6 +8,7 @@ from .api.health import router as health_router
 from .api.jobs import router as jobs_router
 from .api.recordings import router as recordings_router
 from .api.admin import router as admin_router
+from .api.admin_manage import router as admin_manage_router
 from .config import get_settings
 from .errors import register_error_handlers
 from .request_context import RequestIdMiddleware
@@ -29,7 +30,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID", "X-Internal-Token", "X-Bootstrap-Secret"],
     expose_headers=["X-Request-ID"],
 )
@@ -38,3 +39,4 @@ app.include_router(health_router)
 app.include_router(jobs_router, prefix="/api/v1")
 app.include_router(recordings_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(admin_manage_router, prefix="/api/v1")

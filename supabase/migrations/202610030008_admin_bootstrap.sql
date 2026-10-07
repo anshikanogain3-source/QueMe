@@ -7,7 +7,7 @@
 --      it rejects callers without the admin role and records an audit event.
 --   3. Client role edits remain blocked by the guard in migration 02.
 
--- Bootstrap secret is server-held: set QUEME_BOOTSTRAP_SECRET in backend/.env
+-- Bootstrap secret is server-held: set QUEME_BOOTSTRAP_SECRET in the root .env
 -- and pass it to this function from the backend endpoint. There is no way to
 -- learn it from auth.users, profiles, or any client-visible table.
 create or replace function app.bootstrap_first_admin(

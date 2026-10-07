@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend.app.config import get_settings
+from backend.app.config import Settings, get_settings
 from backend.app.main import app
 
 
@@ -26,7 +26,14 @@ def test_validation_error_uses_shared_envelope() -> None:
 
 
 def test_readiness_reports_database_configuration_gap(monkeypatch) -> None:
+    # Settings also reads the root .env file, which may carry a real
+    # QUEME_DATABASE_URL (hosted Supabase). Isolate from the file as well as
+    # the process environment so the unconfigured path stays observable.
     monkeypatch.delenv("QUEME_DATABASE_URL", raising=False)
+    monkeypatch.setattr(
+        "backend.app.api.health.get_settings",
+        lambda: Settings(_env_file=None),
+    )
     get_settings.cache_clear()
     try:
         with TestClient(app) as client:

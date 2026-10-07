@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Read the single root .env file instead of frontend/.env.
+  envDir: "..",
   server: {
     proxy: {
       "/api": {

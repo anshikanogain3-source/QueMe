@@ -88,7 +88,7 @@ npm ci
 npm run dev
 ```
 
-Copy `frontend/.env.example` to `frontend/.env` and set the public Supabase URL/key before using authentication. Vite starts on the first available local port (usually `http://localhost:5173`). Its `/api`, `/health`, and `/ready` paths proxy to `http://127.0.0.1:8000`. `VITE_*` values are public configuration only; never put secrets in them.
+Set the public Supabase URL/key in the single root `.env` file (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`); Vite reads that root `.env` for the frontend. Vite starts on the first available local port (usually `http://localhost:5173`). Its `/api`, `/health`, and `/ready` paths proxy to `http://127.0.0.1:8000`. `VITE_*` values are public configuration only; never put secrets in them.
 
 Routes: `/` is the public landing page (signed-in users are redirected to their role home), `/login`, `/signup`, `/forgot-password`, and `/reset-password` are the authentication screens.
 
@@ -100,10 +100,9 @@ Requires Python 3.10 or newer. From the project root:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r backend/requirements.lock
-cp backend/.env.example backend/.env
 ```
 
-Replace `REPLACE_ME` in `backend/.env` with the password of a PostgreSQL instance and set a random `QUEME_INTERNAL_API_TOKEN`. Start the API:
+The backend reads the single root `.env` file. Uncomment `QUEME_DATABASE_URL` there and set the password of a PostgreSQL instance, plus a random `QUEME_INTERNAL_API_TOKEN`. Start the API:
 
 ```bash
 uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
@@ -113,7 +112,7 @@ uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
 ### Database and Compose
 
-Copy `.env.example` to `.env` and replace `POSTGRES_PASSWORD` and `QUEME_INTERNAL_API_TOKEN` with local values. Then run:
+Uncomment `POSTGRES_PASSWORD` and `QUEME_INTERNAL_API_TOKEN` in the root `.env` and set local values. Then run:
 
 ```bash
 docker compose up --build
@@ -141,7 +140,7 @@ python -m pytest -q
 
 ## Supabase setup
 
-Set the public project URL and publishable/anon key in `frontend/.env`, and set the same URL/key plus the service-role key and a long `QUEME_BOOTSTRAP_SECRET` in `backend/.env`. Apply `supabase/migrations` with the Supabase CLI. The first administrator is created only through `POST /api/v1/admin/bootstrap` using the bootstrap secret; thereafter, an authenticated administrator uses `POST /api/v1/admin/users`. The service-role key and bootstrap secret must never be placed in a `VITE_*` variable.
+The single root `.env` holds all configuration: `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` for the frontend, and `QUEME_SUPABASE_URL`/`QUEME_SUPABASE_ANON_KEY` plus `QUEME_SUPABASE_SERVICE_ROLE_KEY` and a long `QUEME_BOOTSTRAP_SECRET` for the backend. Apply `supabase/migrations` with the Supabase CLI. The first administrator is created only through `POST /api/v1/admin/bootstrap` using the bootstrap secret; thereafter, an authenticated administrator uses `POST /api/v1/admin/users`. The service-role key and bootstrap secret must never be placed in a `VITE_*` variable.
 
 Run the authorization suite with `bash supabase/tests/run_rls_tests.sh`. It checks anonymous denial, signup-metadata escalation, profile escalation, cross-student access, score writes, private-upload paths, and an unassigned teacher's access.
 
