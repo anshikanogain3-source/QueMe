@@ -117,3 +117,21 @@ All authoring routes require an active teacher bearer token.
 
 Questions, rubrics, and templates already used in interviews are protected from edits/deletion that could change historical records. Deactivate an old question instead of deleting it.
 
+# checking the logs afterward
+# Watch all application logs
+tail -f logs/queme.log
+
+# Watch only errors
+tail -f logs/errors.log
+
+# Watch API requests
+tail -f logs/access.log
+
+# Search for errors
+grep -i "ERROR" logs/queme.log
+
+# Search for a particular service
+grep -i "ollama" logs/queme.log
+
+# Watch errors and application activity together
+tail -f logs/queme.log logs/errors.log

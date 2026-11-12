@@ -1,10 +1,12 @@
 import io
 import json
+import socket
 import unittest
+from urllib.error import URLError
 from unittest.mock import patch
 
 from queme import create_app
-from queme.services.llm import _generate, _generate_json, evaluate_answer, generate_followup, generate_questions
+from queme.services.llm import _check_model_available, _generate, _generate_json, evaluate_answer, generate_followup, generate_questions
 
 
 class LocalOllamaTests(unittest.TestCase):
@@ -44,6 +46,28 @@ class LocalOllamaTests(unittest.TestCase):
         self.assertEqual(body["options"], {"temperature": 0.2, "num_predict": 55, "num_ctx": 4096})
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 120)
 
+    def test_model_check_uses_tags_and_requires_the_configured_model(self):
+        response = io.BytesIO(json.dumps({"models": [{"name": "qwen3.5:4b"}]}).encode())
+        with patch("queme.services.llm.urlopen", return_value=response) as urlopen:
+            _check_model_available()
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "http://localhost:11434/api/tags")
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 10)
+
+        response = io.BytesIO(json.dumps({"models": [{"name": "other-model:latest"}]}).encode())
+        with patch("queme.services.llm.urlopen", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "qwen3.5:4b.*not installed"):
+                _check_model_available()
+
+    def test_model_check_reports_connection_and_timeout_errors(self):
+        with patch("queme.services.llm.urlopen", side_effect=URLError(ConnectionRefusedError(111, "Connection refused"))):
+            with self.assertRaisesRegex(RuntimeError, "Connection refused"):
+                _check_model_available()
+
+        with patch("queme.services.llm.urlopen", side_effect=URLError(socket.timeout("timed out"))):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                _check_model_available()
+
     def test_json_generation_retries_invalid_content_once(self):
         with patch("queme.services.llm._generate", side_effect=["not json", '{"followup":null}']) as generate:
             result = _generate_json("prompt", validator=lambda value: isinstance(value, dict))
@@ -51,7 +75,7 @@ class LocalOllamaTests(unittest.TestCase):
         self.assertEqual(generate.call_count, 2)
 
     def test_question_generation_returns_safe_error_when_ollama_is_unavailable(self):
-        with patch("queme.services.llm._generate", side_effect=RuntimeError("Local Ollama is unavailable.")):
+        with patch("queme.services.llm._check_model_available"), patch("queme.services.llm._generate", side_effect=RuntimeError("Local Ollama connection failed.")):
             result = generate_questions("Python", "technical", "easy", count=2)
         self.assertFalse(result["available"])
         self.assertEqual(result["questions"], [])
@@ -59,7 +83,7 @@ class LocalOllamaTests(unittest.TestCase):
 
     def test_question_generation_accepts_qwen_single_object_json(self):
         response = {"question_text": "How do lists and tuples differ?", "question_type": "technical", "difficulty": "easy", "expected_key_points": ["mutable", "immutable"]}
-        with patch("queme.services.llm._generate", return_value=json.dumps(response)):
+        with patch("queme.services.llm._check_model_available"), patch("queme.services.llm._generate", return_value=json.dumps(response)):
             result = generate_questions("Python", "technical", "easy", count=1)
         self.assertTrue(result["available"])
         self.assertEqual(len(result["questions"]), 1)

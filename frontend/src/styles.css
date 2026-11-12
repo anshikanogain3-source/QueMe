@@ -146,6 +146,8 @@ a { color: inherit; }
 .teacher-panel .form-stack { gap: 13px; }
 .teacher-panel .field textarea { min-height: 82px; }
 .teacher-question-picker { display: flex; max-height: 360px; flex-direction: column; gap: 8px; overflow-y: auto; border: 1px solid #e5ebe4; border-radius: 9px; padding: 9px; }
+.question-select-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.question-select-toolbar > span { min-width: 0; }
 .teacher-picker-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf0eb; padding: 8px 3px; }
 .teacher-picker-row:last-child { border-bottom: 0; }
 .teacher-picker-row > label { display: flex; min-width: 0; align-items: flex-start; gap: 9px; }
@@ -157,8 +159,12 @@ a { color: inherit; }
 .selected-question-order { display: flex; flex-direction: column; gap: 7px; border-radius: 9px; background: #f5f8f4; padding: 12px; }
 .selected-question-order > strong { color: #5e6874; font-size: 10px; }
 .selected-question-order > div { display: flex; align-items: center; gap: 8px; color: #434c57; font-size: 10px; }
+.selected-question-order > .selected-row-item { cursor: grab; }
+.selected-question-order > .selected-row-item:active { cursor: grabbing; }
+.selected-question-order > .selected-row-item.is-dragging { opacity: 0.45; }
 .selected-question-order > div span { flex: 1; }
 .selected-question-order .text-button { padding: 3px; }
+.selected-question-order .text-button:disabled { cursor: not-allowed; opacity: 0.35; }
 .teacher-divider { height: 1px; margin: 24px 0 18px; background: #e8ede7; }
 .teacher-panel > h3 { margin: 0 0 12px; color: #2d3a4a; font: 700 14px "Manrope", sans-serif; }
 .teacher-draft { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; border: 1px solid #e5ebe4; border-radius: 9px; padding: 12px; }
@@ -1028,7 +1034,41 @@ html { scroll-behavior: smooth; }
 .filter-pill-btn { border: 1px solid var(--line); border-radius: 20px; background: #fff; padding: 5px 12px; color: #475569; font-size: 11px; font-weight: 600; cursor: pointer; transition: all .12s; }
 .filter-pill-btn:hover { border-color: #93c5fd; background: #f8fafc; color: #2563eb; }
 .filter-pill-btn.active { border-color: #2563eb; background: #2563eb; color: #fff; }
+.teacher-question-bank-page .questions-card-list { display: grid; gap: 12px; }
+.teacher-question-bank-page .teacher-question-card { display: flex; min-width: 0; flex-direction: column; gap: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; padding: 16px 18px; box-shadow: 0 2px 10px rgba(15, 23, 42, 0.035); transition: border-color .15s ease, box-shadow .15s ease; }
+.teacher-question-bank-page .teacher-question-card:hover { border-color: #cbd5e1; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06); }
+.teacher-question-bank-page .q-topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.teacher-question-bank-page .q-badges, .teacher-question-bank-page .q-action-btns { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.teacher-question-bank-page .q-ownership { display: inline-flex; align-items: center; min-height: 25px; border: 1px solid #dbeafe; border-radius: 999px; background: #eff6ff; padding: 0 9px; color: #1e40af; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.teacher-question-bank-page .q-action-btns .button { min-height: 33px; }
+.teacher-question-bank-page .q-card-text { margin: 0; color: var(--navy); font-family: "Manrope", sans-serif; font-size: 16px; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.teacher-question-bank-page .q-card-hint { margin: 0; border-left: 3px solid #bfdbfe; border-radius: 0 7px 7px 0; background: #f8fafc; padding: 9px 11px; color: #475569; font-size: 11px; line-height: 1.55; }
+.teacher-question-bank-page .q-card-hint strong { color: #334155; }
+.teacher-question-bank-page .q-card-topics { display: flex; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .teacher-question-bank-page .teacher-question-card { padding: 14px; }
+  .teacher-question-bank-page .q-topline { align-items: flex-start; }
+  .teacher-question-bank-page .q-action-btns { width: 100%; }
+}
 .rapidfire-card.active-question-card { border: 1px solid var(--line); border-radius: 16px; background: #fff; padding: clamp(24px, 4vw, 36px); box-shadow: 0 4px 20px rgba(15, 23, 42, 0.04); display: flex; flex-direction: column; gap: 24px; }
+.rapidfire-question-meta { display: flex; align-items: center; gap: 8px; }
+.rapidfire-timer { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #dbeafe; border-radius: 999px; background: #eff6ff; padding: 5px 9px; color: #1d4ed8; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rapidfire-timer.is-low { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+.rapidfire-quiz-content { display: flex; flex-direction: column; gap: 18px; }
+.rapidfire-answer-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.rapidfire-answer-option { min-height: 52px; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 12px 16px; color: var(--navy); font: 700 15px "Manrope", sans-serif; text-align: left; cursor: pointer; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease; }
+.rapidfire-answer-option:hover:not(:disabled), .rapidfire-answer-option:focus-visible { border-color: var(--blue); background: #f8fbff; box-shadow: 0 0 0 3px rgb(37 99 235 / 10%); outline: 0; }
+.rapidfire-answer-option:disabled { cursor: default; }
+.rapidfire-answer-option.is-correct { border-color: #86efac; background: #f0fdf4; color: #166534; }
+.rapidfire-answer-option.is-incorrect { border-color: #fca5a5; background: #fef2f2; color: #b91c1c; }
+.rapidfire-answer-feedback { display: flex; align-items: flex-start; gap: 8px; border-radius: 9px; padding: 11px 13px; font-size: 12px; line-height: 1.55; }
+.rapidfire-answer-feedback.is-correct { background: #f0fdf4; color: #166534; }
+.rapidfire-answer-feedback.is-incorrect { background: #fff7ed; color: #9a3412; }
+.rapidfire-answer-feedback svg { flex: 0 0 auto; margin-top: 1px; }
+@media (max-width: 600px) {
+  .rapidfire-answer-grid { grid-template-columns: 1fr; }
+  .rapidfire-question-meta { flex-wrap: wrap; justify-content: flex-end; }
+}
 .card-header { display: flex; flex-direction: column; gap: 12px; }
 .progress-info { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .question-counter { color: #475569; font-size: 13px; }

@@ -1,211 +1,164 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Activity,
-  ArrowLeft,
   ArrowRight,
-  Check,
   CheckCircle2,
-  ChevronRight,
-  Layers,
   RotateCcw,
-  Sparkles,
-  Zap,
+  Timer,
+  XCircle,
 } from "lucide-react";
-import { api } from "../api.js";
 import { StudentWorkspace } from "./StudentWorkspace.jsx";
+import {
+  pickRapidFireQuestions,
+  RAPIDFIRE_DURATION_SECONDS,
+  RAPIDFIRE_QUIZ_QUESTIONS,
+} from "./rapidfireQuiz.js";
 
 export function RapidFirePractice({ user }) {
-  const [allQuestions, setAllQuestions] = useState(null);
-  const [error, setError] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [selectedDifficulty, setSelectedDifficulty] = useState("all");
+  const [roundQuestions, setRoundQuestions] = useState(() =>
+    pickRapidFireQuestions(RAPIDFIRE_QUIZ_QUESTIONS)
+  );
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState({});
+  const [timeLeft, setTimeLeft] = useState(RAPIDFIRE_DURATION_SECONDS);
   const [finished, setFinished] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    api("/rapidfire/questions")
-      .then((data) => {
-        if (active) setAllQuestions(data || []);
-      })
-      .catch((err) => {
-        if (active) setError(err.message);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+  const questionPool = useMemo(
+    () => RAPIDFIRE_QUIZ_QUESTIONS.filter((question) => {
+      const matchesCategory = selectedCategory === "all" ||
+        question.question_type === selectedCategory;
+      const matchesDifficulty = selectedDifficulty === "all" ||
+        question.difficulty === selectedDifficulty;
+      return matchesCategory && matchesDifficulty;
+    }),
+    [selectedCategory, selectedDifficulty]
+  );
 
-  // Filter questions based on category and difficulty
-  const questions = useMemo(() => {
-    if (!allQuestions) return [];
-    return allQuestions.filter((q) => {
-      const matchCat =
-        selectedCategory === "all" ||
-        (q.question_type &&
-          q.question_type.toLowerCase() === selectedCategory.toLowerCase());
-      const matchDiff =
-        selectedDifficulty === "all" ||
-        (q.difficulty &&
-          q.difficulty.toLowerCase() === selectedDifficulty.toLowerCase());
-      return matchCat && matchDiff;
-    });
-  }, [allQuestions, selectedCategory, selectedDifficulty]);
-
-  // Categories available from questions
-  const categories = useMemo(() => {
-    if (!allQuestions) return [];
-    const set = new Set();
-    allQuestions.forEach((q) => {
-      if (q.question_type) set.add(q.question_type.toLowerCase());
-    });
-    return Array.from(set);
-  }, [allQuestions]);
-
-  const activeQuestion = questions[currentIndex];
-  const answeredCount = Object.values(answers).filter(
-    (ans) => typeof ans === "string" && ans.trim().length > 0
+  const activeQuestion = roundQuestions[currentIndex];
+  const selectedAnswer = activeQuestion ? answers[activeQuestion.question_id] : undefined;
+  const score = roundQuestions.filter(
+    (question) => answers[question.question_id] === question.answer
   ).length;
+  const answeredCount = Object.keys(answers).length;
 
-  function resetSession() {
-    setAnswers({});
+  useEffect(() => {
+    if (finished) return undefined;
+    const timer = window.setInterval(() => {
+      setTimeLeft((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [finished]);
+
+  useEffect(() => {
+    if (timeLeft === 0) setFinished(true);
+  }, [timeLeft]);
+
+  function startRound(pool = questionPool) {
+    setRoundQuestions(pickRapidFireQuestions(pool));
     setCurrentIndex(0);
+    setAnswers({});
+    setTimeLeft(RAPIDFIRE_DURATION_SECONDS);
     setFinished(false);
   }
 
-  function handleCategoryChange(cat) {
-    setSelectedCategory(cat);
-    setCurrentIndex(0);
-    setAnswers({});
-    setFinished(false);
+  function changeCategory(category) {
+    setSelectedCategory(category);
+    const pool = RAPIDFIRE_QUIZ_QUESTIONS.filter((question) =>
+      (category === "all" || question.question_type === category) &&
+      (selectedDifficulty === "all" || question.difficulty === selectedDifficulty)
+    );
+    startRound(pool);
   }
 
-  function handleDifficultyChange(diff) {
-    setSelectedDifficulty(diff);
-    setCurrentIndex(0);
-    setAnswers({});
-    setFinished(false);
+  function changeDifficulty(difficulty) {
+    setSelectedDifficulty(difficulty);
+    const pool = RAPIDFIRE_QUIZ_QUESTIONS.filter((question) =>
+      (selectedCategory === "all" || question.question_type === selectedCategory) &&
+      (difficulty === "all" || question.difficulty === difficulty)
+    );
+    startRound(pool);
   }
+
+  function chooseAnswer(option) {
+    if (selectedAnswer !== undefined || !activeQuestion) return;
+    setAnswers((previous) => ({ ...previous, [activeQuestion.question_id]: option }));
+  }
+
+  function advanceQuestion() {
+    if (currentIndex === roundQuestions.length - 1) setFinished(true);
+    else setCurrentIndex((index) => index + 1);
+  }
+
+  const formatTime = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, "0")}`;
 
   return (
     <StudentWorkspace
       user={user}
       active="rapidfire"
       pageTitle="RapidFire"
-      pageSubtitle="Speed Practice"
+      pageSubtitle="2½ minute quiz"
     >
       <div className="rapidfire-container">
-        {error && (
-          <div className="alert alert-error" role="alert">
-            {error}
-          </div>
-        )}
-
-        {/* Top Info Banner */}
         <section className="rapidfire-intro-card">
           <div className="intro-copy">
             <span className="eyebrow eyebrow-blue">SPONTANEOUS REASONING</span>
-            <h2>RapidFire Question Practice</h2>
+            <h2>RapidFire Mini Quiz</h2>
             <p>
-              Answer short, focused prompts to build quick thinking, articulation, and confidence.
-              Responses stay in this session and are not graded or saved permanently.
+              Five quick multiple-choice questions. Pick the one-word answer and see instant
+              feedback. Your practice results stay in this session and are not stored permanently.
             </p>
           </div>
 
           <div className="rapidfire-filter-row">
             <div className="filter-group">
               <span className="filter-group-label">Category:</span>
-              <button
-                type="button"
-                className={`filter-pill-btn${selectedCategory === "all" ? " active" : ""}`}
-                onClick={() => handleCategoryChange("all")}
-              >
-                All ({allQuestions?.length || 0})
-              </button>
-              {categories.map((cat) => (
+              {["all", "technical"].map((category) => (
                 <button
-                  key={cat}
+                  key={category}
                   type="button"
-                  className={`filter-pill-btn${selectedCategory === cat ? " active" : ""}`}
-                  onClick={() => handleCategoryChange(cat)}
+                  className={`filter-pill-btn${selectedCategory === category ? " active" : ""}`}
+                  onClick={() => changeCategory(category)}
                 >
-                  {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                  {category === "all" ? `All (${questionPool.length})` : "Technical"}
                 </button>
               ))}
             </div>
 
             <div className="filter-group">
               <span className="filter-group-label">Difficulty:</span>
-              {["all", "easy", "medium", "hard"].map((diff) => (
+              {["all", "easy", "medium"].map((difficulty) => (
                 <button
-                  key={diff}
+                  key={difficulty}
                   type="button"
-                  className={`filter-pill-btn${selectedDifficulty === diff ? " active" : ""}`}
-                  onClick={() => handleDifficultyChange(diff)}
+                  className={`filter-pill-btn${selectedDifficulty === difficulty ? " active" : ""}`}
+                  onClick={() => changeDifficulty(difficulty)}
                 >
-                  {diff.charAt(0).toUpperCase() + diff.slice(1)}
+                  {difficulty.charAt(0).toUpperCase() + difficulty.slice(1)}
                 </button>
               ))}
             </div>
           </div>
         </section>
 
-        {/* Question Practice Interface */}
-        {allQuestions === null ? (
-          <div className="loading-container">
-            <span className="spinner" />
-            <span>Finding practice questions…</span>
-          </div>
-        ) : questions.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-mark">
-              <Activity size={24} />
-            </div>
-            <h3>No questions available in this filter</h3>
-            <p>
-              {allQuestions.length === 0
-                ? "RapidFire uses questions from interviews assigned by your teacher. Once assigned, you can practice them here."
-                : "No questions match the selected category and difficulty. Try selecting 'All'."}
-            </p>
-            {allQuestions.length > 0 && (
-              <button
-                type="button"
-                className="button button-outline button-small"
-                onClick={() => {
-                  setSelectedCategory("all");
-                  setSelectedDifficulty("all");
-                }}
-              >
-                Reset Filters
-              </button>
-            )}
-          </div>
-        ) : finished ? (
-          /* Finished State */
+        {finished ? (
           <section className="rapidfire-card completion-card">
             <div className="completion-mark">
               <CheckCircle2 size={36} />
             </div>
-            <span className="eyebrow eyebrow-blue">ROUND COMPLETED</span>
-            <h2>Great Practice Session!</h2>
+            <span className="eyebrow eyebrow-blue">
+              {timeLeft === 0 ? "TIME'S UP" : "ROUND COMPLETED"}
+            </span>
+            <h2>Quick round complete</h2>
             <p>
-              You completed questions in this round and responded to{" "}
-              <strong>
-                {answeredCount} of {questions.length}
-              </strong>{" "}
-              prompts.
+              You got <strong>{score} of {roundQuestions.length}</strong> correct and answered{" "}
+              <strong>{answeredCount} of {roundQuestions.length}</strong> questions.
             </p>
-
             <div className="completion-actions">
-              <button
-                type="button"
-                className="button button-outline"
-                onClick={resetSession}
-              >
+              <button type="button" className="button button-outline" onClick={() => startRound()}>
                 <RotateCcw size={15} />
-                <span>Practice Another Round</span>
+                <span>Play another round</span>
               </button>
               <Link to="/practice-interviews" className="button button-primary">
                 <span>Go to Mock Interviews</span>
@@ -214,105 +167,88 @@ export function RapidFirePractice({ user }) {
             </div>
           </section>
         ) : (
-          /* Active Question Card */
           <section className="rapidfire-card active-question-card">
             <div className="card-header">
               <div className="progress-info">
                 <span className="question-counter">
-                  Question <strong>{currentIndex + 1}</strong> of{" "}
-                  <strong>{questions.length}</strong>
+                  Question <strong>{currentIndex + 1}</strong> of <strong>{roundQuestions.length}</strong>
                 </span>
-                <div className="question-badges">
-                  <span className="status-pill status-in_progress">
-                    {activeQuestion?.question_type || "General"}
-                  </span>
+                <div className="rapidfire-question-meta">
+                  <span className="status-pill status-in_progress">Technical</span>
                   <span className="status-pill status-scheduled">
-                    {activeQuestion?.difficulty || "Medium"}
+                    {activeQuestion?.difficulty || "Easy"}
+                  </span>
+                  <span className={`rapidfire-timer${timeLeft <= 30 ? " is-low" : ""}`}>
+                    <Timer size={14} aria-hidden="true" />
+                    <span aria-live="polite">{formatTime}</span>
                   </span>
                 </div>
               </div>
 
-              {/* Linear Progress Bar */}
               <div
                 className="progress-meter"
                 role="progressbar"
+                aria-label="Quiz progress"
                 aria-valuenow={currentIndex + 1}
                 aria-valuemin={1}
-                aria-valuemax={questions.length}
+                aria-valuemax={roundQuestions.length}
               >
-                <span
-                  style={{
-                    width: `${((currentIndex + 1) / questions.length) * 100}%`,
-                  }}
-                />
+                <span style={{ width: `${((currentIndex + 1) / roundQuestions.length) * 100}%` }} />
               </div>
             </div>
 
-            <div className="question-content">
+            <div className="question-content rapidfire-quiz-content">
               <h3 className="prompt-text">{activeQuestion?.question_text}</h3>
-
-              <div className="response-box">
-                <div className="response-header">
-                  <label htmlFor="rapidfire-textarea">
-                    Draft your thoughts or key points
-                  </label>
-                  <span className="optional-tag">Optional practice notes</span>
-                </div>
-                <textarea
-                  id="rapidfire-textarea"
-                  rows={5}
-                  value={answers[activeQuestion?.question_id] || ""}
-                  onChange={(e) =>
-                    setAnswers((prev) => ({
-                      ...prev,
-                      [activeQuestion.question_id]: e.target.value,
-                    }))
-                  }
-                  placeholder="Bullet down your key talking points or outline how you would articulate this answer aloud…"
-                  maxLength={3000}
-                />
+              <div className="rapidfire-answer-grid" role="group" aria-label="Choose one answer">
+                {activeQuestion?.options.map((option) => {
+                  const isSelected = selectedAnswer === option;
+                  const isCorrect = option === activeQuestion.answer;
+                  const resultClass = selectedAnswer === undefined
+                    ? ""
+                    : isCorrect ? " is-correct" : isSelected ? " is-incorrect" : "";
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      className={`rapidfire-answer-option${resultClass}`}
+                      aria-pressed={isSelected}
+                      disabled={selectedAnswer !== undefined}
+                      onClick={() => chooseAnswer(option)}
+                    >
+                      {option}
+                    </button>
+                  );
+                })}
               </div>
+
+              {selectedAnswer !== undefined && (
+                <div className={`rapidfire-answer-feedback${selectedAnswer === activeQuestion.answer ? " is-correct" : " is-incorrect"}`} role="status">
+                  {selectedAnswer === activeQuestion.answer
+                    ? <CheckCircle2 size={17} aria-hidden="true" />
+                    : <XCircle size={17} aria-hidden="true" />}
+                  <span>
+                    <strong>{selectedAnswer === activeQuestion.answer ? "Correct!" : `Answer: ${activeQuestion.answer}.`}</strong>{" "}
+                    {activeQuestion.explanation}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="question-footer">
               <div className="footer-left">
-                {currentIndex > 0 && (
-                  <button
-                    type="button"
-                    className="button button-outline button-small"
-                    onClick={() => setCurrentIndex((prev) => prev - 1)}
-                  >
-                    <ArrowLeft size={14} />
-                    <span>Previous</span>
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="button button-quiet button-small"
-                  onClick={resetSession}
-                >
+                <button type="button" className="button button-quiet button-small" onClick={() => startRound()}>
                   <RotateCcw size={14} />
                   <span>Restart</span>
                 </button>
               </div>
-
               <div className="footer-right">
                 <button
                   type="button"
                   className="button button-primary"
-                  onClick={() => {
-                    if (currentIndex === questions.length - 1) {
-                      setFinished(true);
-                    } else {
-                      setCurrentIndex((prev) => prev + 1);
-                    }
-                  }}
+                  disabled={selectedAnswer === undefined}
+                  onClick={advanceQuestion}
                 >
-                  <span>
-                    {currentIndex === questions.length - 1
-                      ? "Finish Round"
-                      : "Next Question"}
-                  </span>
+                  <span>{currentIndex === roundQuestions.length - 1 ? "Finish Quiz" : "Next Question"}</span>
                   <ArrowRight size={15} />
                 </button>
               </div>
@@ -323,4 +259,3 @@ export function RapidFirePractice({ user }) {
     </StudentWorkspace>
   );
 }
-

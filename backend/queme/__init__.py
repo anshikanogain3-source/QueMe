@@ -1,6 +1,9 @@
+import logging
+import time
+import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from flask_cors import CORS
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -8,6 +11,7 @@ from werkzeug.exceptions import HTTPException
 
 from config import Config, validate_config
 from .extensions import db, migrate
+from .logging_config import configure_logging, log_api_request
 
 
 def create_app(config_object=None):
@@ -17,6 +21,7 @@ def create_app(config_object=None):
     else:
         app.config.from_object(config_object or Config)
     validate_config(app)
+    configure_logging(app)
     if app.config.get("MAX_AUDIO_BYTES") is None:
         app.config["MAX_AUDIO_BYTES"] = 25 * 1024 * 1024
     if app.config.get("MAX_CONTENT_LENGTH") is None:
@@ -41,6 +46,25 @@ def create_app(config_object=None):
     app.register_blueprint(session_bp, url_prefix="/api")
     app.register_blueprint(reports_bp, url_prefix="/api")
 
+    @app.before_request
+    def begin_api_request():
+        if request_is_api():
+            g.request_id = uuid.uuid4().hex
+            g.request_started_at = time.perf_counter()
+
+    @app.after_request
+    def log_api_response(response):
+        if request_is_api():
+            request_id = getattr(g, "request_id", None) or uuid.uuid4().hex
+            response.headers["X-Request-ID"] = request_id
+            log_api_request(
+                logging.getLogger("queme.access"),
+                getattr(g, "request_started_at", None) or time.perf_counter(),
+                request_id,
+                response,
+            )
+        return response
+
     @app.errorhandler(HTTPException)
     def handle_http_error(error):
         if request_is_api():
@@ -51,7 +75,7 @@ def create_app(config_object=None):
     @app.errorhandler(IntegrityError)
     def handle_integrity_error(error):
         db.session.rollback()
-        app.logger.info("Rejected request due to database constraint: %s", error.__class__.__name__)
+        app.logger.warning("Database integrity conflict handled error_type=%s", type(error).__name__)
         return jsonify({"error": "The request conflicts with existing data.", "code": "data_conflict"}), 409
 
     @app.errorhandler(Exception)
@@ -59,7 +83,7 @@ def create_app(config_object=None):
         if isinstance(error, HTTPException):
             return handle_http_error(error)
         db.session.rollback()
-        app.logger.exception("Unhandled API error")
+        app.logger.exception("Unhandled application error")
         return jsonify({"error": "An unexpected server error occurred.", "code": "internal_error"}), 500
 
     @app.get("/api/health")
@@ -68,6 +92,7 @@ def create_app(config_object=None):
             db.session.execute(text("SELECT 1"))
         except SQLAlchemyError:
             db.session.rollback()
+            app.logger.exception("Database health check failed")
             return jsonify({"status": "unavailable", "database": "unavailable"}), 503
         return jsonify({"status": "ok", "database": "ok"})
 
@@ -156,6 +181,7 @@ def register_cli_commands(app):
             raise
         except Exception as exc:
             db.session.rollback()
+            app.logger.exception("Initial database seeding failed")
             raise click.ClickException(f"Initial data could not be seeded: {exc}") from exc
 
         click.echo("Initial data is ready (admin, courses, default rubrics, and score weights).")

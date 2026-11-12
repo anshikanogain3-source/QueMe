@@ -133,8 +133,9 @@ def register():
     db.session.add(user)
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=auth.register error_type=%s", type(exc).__name__)
         return api_error("Email already registered.", "email_conflict", 409)
     return jsonify({"message": "Registration submitted. Wait for admin approval.", "user": user.to_public()}), 201
 

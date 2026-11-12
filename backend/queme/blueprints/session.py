@@ -352,8 +352,9 @@ def submit_answer(interview_id, interview_question_id):
         generate_interview_report(interview)
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=session.submit_answer error_type=%s", type(exc).__name__)
         return api_error("The answer could not be saved. Please retry.", "answer_save_conflict", 409)
     return jsonify({
         "action": "complete" if completed else "next",

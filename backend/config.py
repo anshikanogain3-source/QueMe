@@ -27,10 +27,17 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    LOG_DIR = Path(os.getenv("LOG_DIR", Path(__file__).resolve().parent / "logs"))
+    if not LOG_DIR.is_absolute():
+        LOG_DIR = Path(__file__).resolve().parent / LOG_DIR
+    LOG_MAX_BYTES = _positive_int_env("LOG_MAX_BYTES", str(10 * 1024 * 1024))
+    LOG_BACKUP_COUNT = _positive_int_env("LOG_BACKUP_COUNT", "5")
+
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b").strip()
     OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip()
-    OLLAMA_TIMEOUT = _positive_int_env("OLLAMA_TIMEOUT", "120")
+    OLLAMA_TIMEOUT = _positive_int_env("OLLAMA_TIMEOUT", "300")
     OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
     OLLAMA_NUM_CTX = _positive_int_env("OLLAMA_NUM_CTX", "4096")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
@@ -87,6 +94,8 @@ def validate_config(app):
 
     if app.config.get("STORAGE_BACKEND") not in ("local", "r2", "s3"):
         raise RuntimeError("STORAGE_BACKEND must be 'local', 'r2', or 's3'.")
+    if app.config.get("LOG_LEVEL", "INFO") not in ("DEBUG", "INFO"):
+        raise RuntimeError("LOG_LEVEL must be DEBUG or INFO.")
     if app.config["STORAGE_BACKEND"] == "r2":
         required = ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME")
         missing = [key for key in required if not app.config.get(key)]

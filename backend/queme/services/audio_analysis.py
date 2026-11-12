@@ -1,3 +1,4 @@
+import logging
 import math
 import re
 from collections import Counter
@@ -20,6 +21,8 @@ INTENT_PATTERNS = [
     ("SKIP", re.compile(r"^(?:skip|skip this question|next question|pass this question)[.!?]*$", re.I)),
     ("DONE", re.compile(r"^(?:i am done|i'm done|finish interview|end interview|that is all|that's all)[.!?]*$", re.I)),
 ]
+
+logger = logging.getLogger(__name__)
 
 
 def tokenize(text: str):
@@ -81,6 +84,7 @@ def keyword_hits(transcript: str, key_points: str):
 def _load_audio(path_or_bytes):
     import numpy as np
 
+    av_error_type = None
     if isinstance(path_or_bytes, (bytes, bytearray)):
         try:
             import av
@@ -99,8 +103,8 @@ def _load_audio(path_or_bytes):
                 container.close()
                 if chunks:
                     return np.concatenate(chunks).astype(np.float32), 16000
-        except Exception:
-            pass
+        except Exception as exc:
+            av_error_type = type(exc).__name__
 
     try:
         import librosa
@@ -111,7 +115,12 @@ def _load_audio(path_or_bytes):
         else:
             y, sr = librosa.load(path_or_bytes, sr=16000, mono=True)
         return y.astype(np.float32), sr
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Audio decoding failed av_error_type=%s librosa_error_type=%s",
+            av_error_type or "not_attempted",
+            type(exc).__name__,
+        )
         return None, None
 
 
@@ -180,8 +189,8 @@ def analyze_audio(audio_bytes: bytes, transcript: str, words: list, key_points: 
             if len(voiced):
                 pitch_mean = float(np.mean(voiced))
                 pitch_std = float(np.std(voiced))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Optional pitch extraction failed error_type=%s", type(exc).__name__)
 
         if duration < 0.8 or rms_mean < 0.004:
             quality = "POOR"

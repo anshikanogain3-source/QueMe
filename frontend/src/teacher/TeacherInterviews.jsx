@@ -42,6 +42,7 @@ export function TeacherInterviews({ user }) {
   const [templateEditId, setTemplateEditId] = useState(null);
   const [selectedQuestions, setSelectedQuestions] = useState([]);
   const [questionRubrics, setQuestionRubrics] = useState({});
+  const [draggedQuestionId, setDraggedQuestionId] = useState(null);
 
   // AI Draft Generator State
   const [draftPrompt, setDraftPrompt] = useState({
@@ -128,14 +129,49 @@ export function TeacherInterviews({ user }) {
     );
   }
 
+  function toggleAllLibraryQuestions() {
+    const activeQuestionIds = questions
+      .filter((question) => question.is_active)
+      .map((question) => question.question_id);
+    const allSelected = activeQuestionIds.every((id) => selectedQuestions.includes(id));
+    setSelectedQuestions((prev) =>
+      allSelected
+        ? prev.filter((id) => !activeQuestionIds.includes(id))
+        : [...prev, ...activeQuestionIds.filter((id) => !prev.includes(id))]
+    );
+  }
+
+  function toggleAllDrafts() {
+    const allSelected = drafts.every((_, index) => selectedDrafts.includes(index));
+    setSelectedDrafts(allSelected ? [] : drafts.map((_, index) => index));
+  }
+
   function moveQuestion(index, delta) {
     const target = index + delta;
     if (target < 0 || target >= selectedQuestions.length) return;
+    reorderQuestion(index, target);
+  }
+
+  function reorderQuestion(sourceIndex, targetIndex) {
     setSelectedQuestions((prev) => {
+      if (
+        sourceIndex < 0 || sourceIndex >= prev.length ||
+        targetIndex < 0 || targetIndex >= prev.length || sourceIndex === targetIndex
+      ) return prev;
       const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
+      const [moved] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, moved);
       return next;
     });
+  }
+
+  function dropQuestion(targetQuestionId) {
+    const sourceIndex = selectedQuestions.indexOf(draggedQuestionId);
+    const targetIndex = selectedQuestions.indexOf(targetQuestionId);
+    if (sourceIndex !== -1 && targetIndex !== -1) {
+      reorderQuestion(sourceIndex, targetIndex);
+    }
+    setDraggedQuestionId(null);
   }
 
   async function generateDrafts() {
@@ -337,6 +373,11 @@ export function TeacherInterviews({ user }) {
     () => selectedQuestions.map((id) => questions.find((q) => q.question_id === id)).filter(Boolean),
     [selectedQuestions, questions]
   );
+  const activeQuestionIds = questions
+    .filter((question) => question.is_active)
+    .map((question) => question.question_id);
+  const allLibraryQuestionsSelected = activeQuestionIds.length > 0 &&
+    activeQuestionIds.every((id) => selectedQuestions.includes(id));
 
   return (
     <TeacherWorkspace
@@ -654,9 +695,17 @@ export function TeacherInterviews({ user }) {
                 </label>
 
                 <div className="field">
-                  <span>
-                    Select Questions from Library ({selectedQuestions.length} selected)
-                  </span>
+                  <div className="question-select-toolbar">
+                    <span>Select Questions from Library ({selectedQuestions.length} selected)</span>
+                    <button
+                      type="button"
+                      className="button button-outline button-small"
+                      disabled={activeQuestionIds.length === 0}
+                      onClick={toggleAllLibraryQuestions}
+                    >
+                      {allLibraryQuestionsSelected ? "Deselect all" : "Select all"}
+                    </button>
+                  </div>
                   <div className="teacher-question-picker">
                     {questions
                       .filter((q) => q.is_active)
@@ -701,9 +750,27 @@ export function TeacherInterviews({ user }) {
 
                 {selectedQuestionRows.length > 0 && (
                   <div className="selected-question-order">
-                    <strong>Question Order (reorder with arrows):</strong>
+                    <strong>Question Order (drag to reorder or use arrows):</strong>
                     {selectedQuestionRows.map((q, index) => (
-                      <div key={q.question_id} className="selected-row-item">
+                      <div
+                        key={q.question_id}
+                        className={`selected-row-item${draggedQuestionId === q.question_id ? " is-dragging" : ""}`}
+                        draggable
+                        onDragStart={(event) => {
+                          setDraggedQuestionId(q.question_id);
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", String(q.question_id));
+                        }}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          dropQuestion(q.question_id);
+                        }}
+                        onDragEnd={() => setDraggedQuestionId(null)}
+                      >
                         <span>
                           {index + 1}. {q.question_text}
                         </span>
@@ -711,6 +778,8 @@ export function TeacherInterviews({ user }) {
                           <button
                             type="button"
                             className="text-button"
+                            aria-label={`Move question ${index + 1} up`}
+                            disabled={index === 0}
                             onClick={() => moveQuestion(index, -1)}
                           >
                             ↑
@@ -718,6 +787,8 @@ export function TeacherInterviews({ user }) {
                           <button
                             type="button"
                             className="text-button"
+                            aria-label={`Move question ${index + 1} down`}
+                            disabled={index === selectedQuestionRows.length - 1}
                             onClick={() => moveQuestion(index, 1)}
                           >
                             ↓
@@ -838,6 +909,15 @@ export function TeacherInterviews({ user }) {
 
                   {drafts.length > 0 && (
                     <div className="teacher-draft-list">
+                      <button
+                        type="button"
+                        className="button button-outline button-small"
+                        onClick={toggleAllDrafts}
+                      >
+                        {drafts.every((_, index) => selectedDrafts.includes(index))
+                          ? "Deselect all drafts"
+                          : "Select all drafts"}
+                      </button>
                       {drafts.map((draft, idx) => (
                         <div key={idx} className="teacher-draft">
                           <label>

@@ -1,7 +1,7 @@
 import math
 from statistics import correlation, mean, StatisticsError
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
@@ -129,8 +129,9 @@ def create_department():
     db.session.add(department)
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=admin.create_department error_type=%s", type(exc).__name__)
         return api_error("Department already exists.", "department_conflict", 409)
     return jsonify(_department_dict(department)), 201
 
@@ -222,8 +223,9 @@ def create_batch():
     db.session.add(batch)
     try:
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=admin.create_batch error_type=%s", type(exc).__name__)
         return api_error("Could not create batch because of a conflicting record.", "batch_conflict", 409)
     return jsonify(_batch_dict(batch)), 201
 

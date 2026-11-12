@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import math
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
@@ -286,8 +286,9 @@ def commit_question_drafts():
                 output.append(question.to_dict())
                 seen_ids.add(question.question_id)
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=teacher.commit_question_drafts error_type=%s", type(exc).__name__)
         return api_error("Selected questions could not be saved because of a conflicting record.", "question_conflict", 409)
     return jsonify({"questions": output, "question_ids": output_ids, "created_count": created_count, "reused_count": len(output) - created_count}), 200
 
@@ -719,8 +720,9 @@ def assign_interviews():
             db.session.add(interview)
             interviews.append(interview)
         db.session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.session.rollback()
+        current_app.logger.warning("Database integrity conflict operation=teacher.assign_interviews error_type=%s", type(exc).__name__)
         return api_error("The interviews could not be assigned because related data changed.", "assignment_conflict", 409)
     return jsonify({
         "assigned_count": len(interviews),

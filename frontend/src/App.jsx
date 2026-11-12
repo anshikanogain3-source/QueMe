@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Activity, ArrowLeft, ArrowRight, AudioLines, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ClipboardCheck, Clock3, Eye, EyeOff, FileBarChart2, FileText, Headphones, House, LogOut, Menu, Play, Settings2, ShieldCheck, Users, Video, VideoOff, X } from "lucide-react";
 import { api } from "./api.js";
@@ -78,7 +78,7 @@ function Protected({ children, roles }) {
   if (!ready) return <Loading />;
   if (!user) return <Navigate to="/login" replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
-  return children;
+  return isValidElement(children) ? cloneElement(children, { user }) : children;
 }
 
 function AuthLayout({ eyebrow, title, description, children, footer }) {

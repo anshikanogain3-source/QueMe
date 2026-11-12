@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 backend/uploads/
+backend/logs/
 backend/*.db
 backend/queme/instance/*.db
 node_modules/
