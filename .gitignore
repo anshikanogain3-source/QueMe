@@ -1,0 +1,17 @@
+.env
+.venv
+venv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+backend/uploads/
+backend/*.db
+backend/queme/instance/*.db
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.webm
+*.wav
+.DS_Store
+whisper-cache/
