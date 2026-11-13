@@ -46,17 +46,17 @@ export function TeacherEvaluations({ user }) {
   }, []);
 
   const counts = useMemo(() => {
-    const pending = interviews.filter((i) => i.teacher_remark == null).length;
-    const reviewed = interviews.filter((i) => i.teacher_remark != null).length;
+    const pending = interviews.filter((i) => i.teacher_review_status === "PENDING").length;
+    const reviewed = interviews.filter((i) => i.teacher_review_status === "REVIEWED").length;
     return { all: interviews.length, pending, reviewed };
   }, [interviews]);
 
   const filteredEvals = useMemo(() => {
     let list = interviews;
     if (evalFilter === "pending") {
-      list = list.filter((i) => i.teacher_remark == null);
+      list = list.filter((i) => i.teacher_review_status === "PENDING");
     } else if (evalFilter === "reviewed") {
-      list = list.filter((i) => i.teacher_remark != null);
+      list = list.filter((i) => i.teacher_review_status === "REVIEWED");
     }
 
     if (searchTerm.trim()) {
@@ -165,7 +165,7 @@ export function TeacherEvaluations({ user }) {
                 </thead>
                 <tbody>
                   {filteredEvals.map((item) => {
-                    const isReviewed = item.teacher_remark != null;
+                    const isReviewed = item.teacher_review_status === "REVIEWED";
                     const dateFormatted = item.ended_at
                       ? new Date(item.ended_at).toLocaleDateString([], {
                           dateStyle: "medium",

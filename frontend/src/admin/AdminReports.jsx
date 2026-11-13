@@ -237,7 +237,7 @@ export function AdminReports({ user }) {
                       <td>
                         {report.final_score != null ? (
                           <span className="score-badge">
-                            <strong>{report.final_score}%</strong>
+                            <strong>{Number(report.final_score).toFixed(1)}/10</strong>
                           </span>
                         ) : (
                           <span className="score-badge muted">Pending review</span>

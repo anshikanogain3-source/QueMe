@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import math
 
 from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 
 from ..api_errors import api_error, json_object
@@ -38,6 +38,32 @@ def _positive_id(value, field):
     if parsed <= 0:
         return None, f"{field} must be a positive integer."
     return parsed, None
+
+
+def _overall_reviewed(interview, report):
+    if report is None:
+        return bool((interview.teacher_remark or "").strip())
+    return bool(
+        report.reviewed_at
+        or report.report_status == "REVIEWED"
+        or report.teacher_score is not None
+        or (report.teacher_remark or "").strip()
+    )
+
+
+def _overall_reviewed_expression():
+    report_reviewed = or_(
+        Report.reviewed_at.isnot(None),
+        Report.report_status == "REVIEWED",
+        Report.teacher_score.isnot(None),
+        and_(Report.teacher_remark.isnot(None), func.trim(Report.teacher_remark) != ""),
+    )
+    legacy_reviewed_without_report = and_(
+        Report.report_id.is_(None),
+        Interview.teacher_remark.isnot(None),
+        func.trim(Interview.teacher_remark) != "",
+    )
+    return or_(report_reviewed, legacy_reviewed_without_report)
 
 
 def _can_use_questions(query):
@@ -612,20 +638,40 @@ def _scheduled_at(value):
 @login_required("teacher", "student")
 def list_assigned_interviews():
     owner_key = "teacher_id" if g.user.role == "teacher" else "student_id"
-    rows = Interview.query.filter_by(**{owner_key: g.user.user_id}).order_by(
+    rows = db.session.query(Interview, Report).outerjoin(
+        Report, Report.interview_id == Interview.interview_id
+    ).filter(getattr(Interview, owner_key) == g.user.user_id).order_by(
         Interview.created_at.desc(), Interview.interview_id.desc()
     ).all()
-    return jsonify([row.to_dict() for row in rows])
+    return jsonify([
+        {
+            **interview.to_dict(),
+            "report_status": report.report_status if report else None,
+            "report_reviewed_at": report.reviewed_at.isoformat() if report and report.reviewed_at else None,
+            "teacher_review_status": (
+                "REVIEWED" if _overall_reviewed(interview, report) else "PENDING"
+            ) if interview.status == "COMPLETED" else None,
+        }
+        for interview, report in rows
+    ])
 
 
 @bp.get("/teacher/analytics")
 @login_required("teacher")
 def teacher_analytics():
     rows = Interview.query.filter_by(teacher_id=g.user.user_id).all()
-    pending_reviews = db.session.query(func.count(Report.report_id)).join(
-        Interview, Report.interview_id == Interview.interview_id
-    ).filter(Interview.teacher_id == g.user.user_id, Report.report_status == "NEEDS_REVIEW").scalar() or 0
-    scored = [float(row.final_score) for row in rows if row.final_score is not None]
+    pending_reviews = db.session.query(func.count(Interview.interview_id)).outerjoin(
+        Report, Report.interview_id == Interview.interview_id
+    ).filter(
+        Interview.teacher_id == g.user.user_id,
+        Interview.status == "COMPLETED",
+        ~_overall_reviewed_expression(),
+    ).scalar() or 0
+    scored = [
+        float(row.final_score)
+        for row in rows
+        if row.status == "COMPLETED" and row.final_score is not None
+    ]
     return jsonify({
         "interview_count": len(rows),
         "active_interviews": sum(row.status in ("SCHEDULED", "IN_PROGRESS") for row in rows),

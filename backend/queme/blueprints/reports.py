@@ -3,13 +3,16 @@ import json
 import math
 
 from flask import Blueprint, g, jsonify, send_file
+from sqlalchemy.exc import IntegrityError
 
 from ..api_errors import api_error, json_object
 from ..authz import login_required
 from ..extensions import db
 from ..models import Interview, InterviewQuestion, QuestionReview, Report
+from ..services.answer_jobs import processing_summary
 from ..services.reports import (
     _valid_score,
+    answer_processing_status,
     build_excel,
     build_pdf,
     build_report_analytics,
@@ -76,6 +79,7 @@ def _report_payload(interview, report):
         "template_title": interview.template.title if interview.template else None,
         "score_weights": {"content_weight": content_weight, "delivery_weight": delivery_weight},
         "score_method": "Question final AI score = content score × content weight + delivery score × delivery weight; both component scores use a 0–10 scale.",
+        "answer_processing": processing_summary(interview),
         **analytics,
         "questions": [
             {
@@ -95,6 +99,7 @@ def _report_payload(interview, report):
                 "needs_review": bool(row.needs_review),
                 "evaluation": row.evaluation_json,
                 "analysis_status": question_analysis_status(row),
+                "processing_status": answer_processing_status(row),
                 "teacher_review": _teacher_review_payload(row),
                 "audio_analysis": {
                     **row.analysis.to_dict(),
@@ -107,6 +112,30 @@ def _report_payload(interview, report):
             for row in questions
         ],
     }
+
+
+def _get_or_create_report(interview_id, *, commit_if_created=True):
+    interview = (
+        db.session.query(Interview)
+        .filter_by(interview_id=interview_id)
+        .with_for_update()
+        .first()
+    )
+    report = Report.query.filter_by(interview_id=interview_id).first()
+    if report is None:
+        report = generate_interview_report(interview)
+        try:
+            if commit_if_created:
+                db.session.commit()
+            else:
+                db.session.flush()
+        except IntegrityError:
+            db.session.rollback()
+            interview = db.session.get(Interview, interview_id)
+            report = Report.query.filter_by(interview_id=interview_id).first()
+            if report is None:
+                raise
+    return interview, report
 def _score(value, field):
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None, f"{field} must be a finite number from 0 to 10."
@@ -124,10 +153,7 @@ def get_report(interview_id):
         return error
     if interview.status != "COMPLETED":
         return api_error("The report is available after the interview is completed.", "report_not_ready", 409)
-    report = Report.query.filter_by(interview_id=interview_id).first()
-    if report is None:
-        report = generate_interview_report(interview)
-        db.session.commit()
+    interview, report = _get_or_create_report(interview_id)
     return jsonify(_report_payload(interview, report))
 
 
@@ -199,11 +225,9 @@ def review_report(interview_id):
     allowed_fields = {"teacher_score", "teacher_remark", "question_reviews"}
     if set(data) - allowed_fields:
         return api_error("Review contains unsupported fields.", "invalid_review", 400)
+    overall_review_submitted = "teacher_score" in data or "teacher_remark" in data
 
-    report = Report.query.filter_by(interview_id=interview_id).first()
-    if report is None:
-        report = generate_interview_report(interview)
-        db.session.flush()
+    interview, report = _get_or_create_report(interview_id, commit_if_created=False)
 
     if "teacher_score" in data:
         value = data["teacher_score"]
@@ -286,7 +310,8 @@ def review_report(interview_id):
         ):
             question.needs_review = True
 
-    report.reviewed_at = datetime.utcnow()
+    if overall_review_submitted:
+        report.reviewed_at = datetime.utcnow()
     generate_interview_report(interview)
     db.session.commit()
     return jsonify(_report_payload(interview, report))
@@ -300,10 +325,7 @@ def pdf_report(interview_id):
         return error
     if interview.status != "COMPLETED":
         return api_error("The report is available after the interview is completed.", "report_not_ready", 409)
-    report = Report.query.filter_by(interview_id=interview_id).first()
-    if report is None:
-        report = generate_interview_report(interview)
-        db.session.commit()
+    interview, report = _get_or_create_report(interview_id)
     questions = InterviewQuestion.query.filter_by(interview_id=interview_id).order_by(
         InterviewQuestion.question_order
     ).all()
@@ -318,10 +340,7 @@ def excel_report(interview_id):
         return error
     if interview.status != "COMPLETED":
         return api_error("The report is available after the interview is completed.", "report_not_ready", 409)
-    report = Report.query.filter_by(interview_id=interview_id).first()
-    if report is None:
-        report = generate_interview_report(interview)
-        db.session.commit()
+    interview, report = _get_or_create_report(interview_id)
     questions = InterviewQuestion.query.filter_by(interview_id=interview_id).order_by(
         InterviewQuestion.question_order
     ).all()
@@ -351,6 +370,7 @@ def excel_report(interview_id):
             "filler_word_count": q.analysis.filler_word_count if q.analysis and q.analysis.filler_word_count is not None else "",
             "audio_quality": q.analysis.audio_quality_status if q.analysis else "",
             "analysis_status": question_analysis_status(q)["status"],
+            "processing_status": answer_processing_status(q),
         }
         for q in questions
     ]

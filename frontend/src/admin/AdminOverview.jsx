@@ -206,7 +206,7 @@ export function AdminOverview({ user }) {
             <div className="kpi-body">
               <span className="kpi-label">Average Score</span>
               <strong className="kpi-value">
-                {analytics?.average_score ? `${analytics.average_score}%` : "—"}
+                {analytics?.average_score != null ? `${Number(analytics.average_score).toFixed(1)}/10` : "—"}
               </strong>
               <small className="kpi-sub">Across campus evaluations</small>
             </div>
@@ -337,7 +337,7 @@ export function AdminOverview({ user }) {
                       <strong>{report.template_title || `Interview #${report.interview_id}`}</strong>
                       <span className="recent-report-sub">
                         {report.student_name || "Student"} &middot;{" "}
-                        {report.final_score != null ? `${report.final_score}%` : "Pending score"}
+                        {report.final_score != null ? `${Number(report.final_score).toFixed(1)}/10` : "Pending score"}
                       </span>
                     </div>
                     <Link

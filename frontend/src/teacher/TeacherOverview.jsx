@@ -132,7 +132,7 @@ export function TeacherOverview({ user }) {
                 {analytics?.completed_interviews ?? "—"}
               </strong>
               <span className="metric-caption">
-                Avg score: {analytics?.average_score ? `${analytics.average_score}/10` : "—"}
+                Avg score: {analytics?.average_score != null ? `${analytics.average_score}/10` : "—"}
               </span>
             </div>
           </article>

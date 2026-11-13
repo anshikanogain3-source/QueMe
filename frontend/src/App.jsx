@@ -1,6 +1,6 @@
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Activity, ArrowLeft, ArrowRight, AudioLines, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ClipboardCheck, Clock3, Eye, EyeOff, FileBarChart2, FileText, Headphones, House, LogOut, Menu, Play, Settings2, ShieldCheck, Users, Video, VideoOff, X } from "lucide-react";
+import { Activity, ArrowLeft, ArrowRight, AudioLines, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ClipboardCheck, Clock3, Eye, EyeOff, FileBarChart2, FileText, Headphones, House, LogOut, Menu, Mic, MicOff, Pause, Play, Settings2, ShieldCheck, Users, Video, VideoOff, X } from "lucide-react";
 import { api } from "./api.js";
 import { useAuth } from "./auth.jsx";
 import TeacherDashboard from "./TeacherDashboard.jsx";
@@ -553,36 +553,86 @@ function AdminDashboard({ user }) {
   );
 }
 
+let speechSequence = 0;
+
 function cancelSpeech() {
+  speechSequence += 1;
   if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+}
+
+function waitForSpeechVoices(synthesis) {
+  const existing = synthesis.getVoices();
+  if (existing.length) return Promise.resolve(existing);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      const voices = synthesis.getVoices();
+      if (!voices.length && Date.now() < deadline) return;
+      settled = true;
+      window.clearTimeout(timer);
+      synthesis.removeEventListener?.("voiceschanged", finish);
+      resolve(voices);
+    };
+    const deadline = Date.now() + 900;
+    const timer = window.setTimeout(finish, 950);
+    synthesis.addEventListener?.("voiceschanged", finish);
+  });
+}
+
+function splitSpeechSentences(text) {
+  const sentences = String(text || "").match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [String(text || "")];
+  return sentences.flatMap((sentence) => {
+    const trimmed = sentence.trim();
+    if (trimmed.length <= 220) return trimmed ? [trimmed] : [];
+    return trimmed.split(/(?<=[,;:])\s+/).reduce((parts, clause) => {
+      const current = parts.at(-1);
+      if (current && `${current} ${clause}`.length <= 220) parts[parts.length - 1] = `${current} ${clause}`;
+      else parts.push(clause);
+      return parts;
+    }, []);
+  });
 }
 
 function speak(text, onState = () => {}) {
   if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return false;
   cancelSpeech();
-  try {
-    const synthesis = window.speechSynthesis;
-    const line = new SpeechSynthesisUtterance(text);
-    const voices = synthesis.getVoices();
-    const english = voices.filter((voice) => /^en(-|_)/i.test(voice.lang));
-    const feminineVoice = (voice) => /female|woman|samantha|victoria|karen|zira|susan|aria|jenny|sara|google uk english female/i.test(voice.name);
-    const indianFeminine = english.find((voice) => /en[-_]in/i.test(voice.lang) && feminineVoice(voice));
-    const feminine = english.find(feminineVoice);
-    const indian = english.find((voice) => /en[-_]in/i.test(voice.lang));
-    line.voice = indianFeminine || feminine || indian || english[0] || null;
-    line.lang = line.voice?.lang || "en-IN";
-    line.rate = 0.96;
-    line.pitch = 1;
-    line.onstart = () => onState("speaking");
-    line.onend = () => onState("ready");
-    line.onerror = (event) => {
-      if (event.error === "canceled" || event.error === "interrupted") return;
-      onState("error");
-    };
-    synthesis.speak(line);
-  } catch {
-    return false;
-  }
+  const synthesis = window.speechSynthesis;
+  const sequence = speechSequence;
+  (async () => {
+    try {
+      const voices = await waitForSpeechVoices(synthesis);
+      if (sequence !== speechSequence) return;
+      const english = voices.filter((voice) => /^en(-|_)/i.test(voice.lang));
+      const calmVoicePriority = /^(google (uk english female|us english)|microsoft (aria|jenny)|samantha|ava|jenny|aria|sonia|serena|victoria)(\b|$)/i;
+      const preferredVoice = english.find((voice) => calmVoicePriority.test(voice.name));
+      const indianEnglish = english.find((voice) => /en[-_]in/i.test(voice.lang));
+      const voice = preferredVoice || indianEnglish || english[0] || null;
+      const sentences = splitSpeechSentences(text);
+      if (!sentences.length) { onState("ready"); return; }
+      let index = 0;
+      const queueNext = () => {
+        if (sequence !== speechSequence) return;
+        if (index >= sentences.length) { onState("ready"); return; }
+        const line = new SpeechSynthesisUtterance(sentences[index]);
+        line.voice = voice;
+        line.lang = voice?.lang || "en-IN";
+        line.rate = 0.88;
+        line.pitch = 1.0;
+        line.volume = 1;
+        line.onstart = () => onState("speaking");
+        line.onend = () => { index += 1; queueNext(); };
+        line.onerror = (event) => {
+          if (event.error === "canceled" || event.error === "interrupted" || sequence !== speechSequence) return;
+          onState("error");
+        };
+        synthesis.speak(line);
+      };
+      queueNext();
+    } catch {
+      if (sequence === speechSequence) onState("error");
+    }
+  })();
   return true;
 }
 
@@ -630,6 +680,7 @@ function ReportPage() {
   const [questionEdits, setQuestionEdits] = useState({});
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingQuestionId, setSavingQuestionId] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [expandedQuestions, setExpandedQuestions] = useState(() => new Set());
@@ -662,7 +713,7 @@ function ReportPage() {
     setQuestionEdits((current) => ({ ...current, [id]: { ...current[id], [key]: value } }));
   }
 
-  async function saveReview(event) {
+  async function saveOverallReview(event) {
     event.preventDefault();
     setSaving(true); setError(""); setNotice("");
     try {
@@ -671,27 +722,57 @@ function ReportPage() {
         body: JSON.stringify({
           teacher_score: teacherScore === "" ? null : Number(teacherScore),
           teacher_remark: teacherRemark,
-          question_reviews: report.questions.map((q) => ({
-            interview_question_id: q.interview_question_id,
-            teacher_score: questionEdits[q.interview_question_id]?.teacher_score === "" ? null : Number(questionEdits[q.interview_question_id]?.teacher_score),
-            teacher_remark: questionEdits[q.interview_question_id]?.teacher_remark || "",
-          teacher_criteria_scores: Object.fromEntries(Object.entries(questionEdits[q.interview_question_id]?.teacher_criteria_scores || {})
-            .filter(([, score]) => score !== "" && score != null).map(([criterion, score]) => [criterion, Number(score)])),
-          })),
         }),
       });
       setReport(updated);
       setTeacherScore(updated.teacher_score ?? "");
       setTeacherRemark(updated.teacher_remark || "");
-      setQuestionEdits(Object.fromEntries(updated.questions.map((q) => [q.interview_question_id, {
-        teacher_score: q.teacher_score ?? "", teacher_remark: q.teacher_remark || "",
-        teacher_criteria_scores: q.teacher_review?.teacher_criteria_scores || Object.fromEntries(
-          Object.keys(q.evaluation?.criteria_scores || {}).map((criterion) => [criterion, ""]),
-        ),
-      }])));
-      setNotice("Teacher review saved.");
+      setNotice("Overall teacher review saved. Individual question reviews remain optional.");
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
+  }
+
+  function hasQuestionReviewInput(id) {
+    const edit = questionEdits[id] || {};
+    return (edit.teacher_score !== "" && edit.teacher_score != null)
+      || Boolean(edit.teacher_remark?.trim())
+      || Object.values(edit.teacher_criteria_scores || {}).some((score) => score !== "" && score != null);
+  }
+
+  async function saveQuestionReview(id) {
+    if (!hasQuestionReviewInput(id)) return;
+    const edit = questionEdits[id] || {};
+    setSavingQuestionId(id); setError(""); setNotice("");
+    try {
+      const updated = await api(`/interviews/${interviewId}/report`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          question_reviews: [{
+            interview_question_id: id,
+            teacher_score: edit.teacher_score === "" ? null : Number(edit.teacher_score),
+            teacher_remark: edit.teacher_remark || "",
+            teacher_criteria_scores: Object.fromEntries(Object.entries(edit.teacher_criteria_scores || {})
+              .filter(([, score]) => score !== "" && score != null)
+              .map(([criterion, score]) => [criterion, Number(score)])),
+          }],
+        }),
+      });
+      setReport(updated);
+      const saved = updated.questions.find((question) => question.interview_question_id === id);
+      if (saved) {
+        setQuestionEdits((current) => ({
+          ...current,
+          [id]: {
+            ...current[id],
+            teacher_score: saved.teacher_score ?? "",
+            teacher_remark: saved.teacher_remark || "",
+            teacher_criteria_scores: saved.teacher_review?.teacher_criteria_scores || current[id]?.teacher_criteria_scores || {},
+          },
+        }));
+      }
+      setNotice("Question review saved separately from the overall review.");
+    } catch (err) { setError(err.message); }
+    finally { setSavingQuestionId(null); }
   }
 
   async function download(path, filename) {
@@ -744,7 +825,7 @@ function ReportPage() {
       <p className="report-score-method">{report.score_method} Configured weights: {Math.round((report.score_weights?.content_weight ?? 0.7) * 100)}% content and {Math.round((report.score_weights?.delivery_weight ?? 0.3) * 100)}% delivery.</p>
       <InterviewAnalyticsSections report={report} />
       {notice && <div className="alert alert-info" role="status">{notice}</div>}
-      <form onSubmit={saveReview}>
+      <div>
         <section className="report-question-list" aria-label="Question feedback">{questions.map((q) => {
           const id = q.interview_question_id;
           const isExpanded = expandedQuestions.has(id);
@@ -772,27 +853,90 @@ function ReportPage() {
               {q.audio_analysis && <div className="report-audio-metrics"><span>Audio quality: {q.audio_analysis.audio_quality_status || "Not assessed"}</span><span>{q.audio_analysis.words_per_minute ?? "—"} words/min</span><span>{q.audio_analysis.pause_count ?? "—"} pauses</span><span>{q.audio_analysis.filler_word_count ?? "—"} fillers</span></div>}
               <div className="report-answer-materials">{q.transcript?.trim() ? <div className="report-transcript-panel"><button type="button" aria-expanded={openTranscripts.has(id)} onClick={() => toggleSet(setOpenTranscripts, id)}>{openTranscripts.has(id) ? "Hide transcript" : "View transcript"}</button>{openTranscripts.has(id) && <p>{q.transcript}</p>}</div> : null}
                 <div className="report-audio-panel">{q.audio_url ? <><span className="report-audio-link">Play recorded answer</span><AuthenticatedAudio path={q.audio_url} /></> : <span className="report-material-unavailable">No recording available</span>}</div></div>
-              {canReview && <div className="report-review-fields">{Object.keys(q.evaluation?.criteria_scores || {}).map((criterion) => <label className="field" key={"teacher-" + criterion}><span>Teacher · {criterion} <em>0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={questionEdits[id]?.teacher_criteria_scores?.[criterion] ?? ""} onChange={(event) => setQuestionEdits((current) => ({ ...current, [id]: { ...current[id], teacher_criteria_scores: { ...current[id]?.teacher_criteria_scores, [criterion]: event.target.value } } }))} /></label>)}<label className="field"><span>Teacher score override <em>Optional · 0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={questionEdits[id]?.teacher_score ?? ""} onChange={(event) => updateQuestion(id, "teacher_score", event.target.value)} /></label><label className="field"><span>Teacher remark</span><textarea maxLength="5000" rows="3" value={questionEdits[id]?.teacher_remark ?? ""} onChange={(event) => updateQuestion(id, "teacher_remark", event.target.value)} /></label></div>}
+              {canReview && <div className="report-review-fields">{Object.keys(q.evaluation?.criteria_scores || {}).map((criterion) => <label className="field" key={"teacher-" + criterion}><span>Teacher · {criterion} <em>Optional · 0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={questionEdits[id]?.teacher_criteria_scores?.[criterion] ?? ""} onChange={(event) => setQuestionEdits((current) => ({ ...current, [id]: { ...current[id], teacher_criteria_scores: { ...current[id]?.teacher_criteria_scores, [criterion]: event.target.value } } }))} /></label>)}<label className="field"><span>Teacher score override <em>Optional · 0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={questionEdits[id]?.teacher_score ?? ""} onChange={(event) => updateQuestion(id, "teacher_score", event.target.value)} /></label><label className="field"><span>Teacher remark <em>Optional</em></span><textarea maxLength="5000" rows="3" value={questionEdits[id]?.teacher_remark ?? ""} onChange={(event) => updateQuestion(id, "teacher_remark", event.target.value)} /></label><button type="button" className="button button-outline button-small report-question-save" disabled={saving || savingQuestionId !== null || !hasQuestionReviewInput(id)} onClick={() => saveQuestionReview(id)}>{savingQuestionId === id ? "Saving question review…" : "Save question review"}</button></div>}
             </div>}
           </article>;
         })}</section>
-        {canReview && <section className="report-review-summary"><span className="eyebrow">FACILITATOR REVIEW</span><h2>Overall teacher review</h2><div className="field-row"><label className="field"><span>Overall score override <em>Optional · 0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={teacherScore} onChange={(event) => setTeacherScore(event.target.value)} /></label></div><label className="field"><span>Overall remarks</span><textarea maxLength="5000" rows="4" value={teacherRemark} onChange={(event) => setTeacherRemark(event.target.value)} /></label><button className="button button-primary" disabled={saving}>{saving ? "Saving review…" : "Save teacher review"}<span aria-hidden="true">→</span></button></section>}
-      </form>
+        {canReview && <section className="report-review-summary"><span className="eyebrow">FACILITATOR REVIEW</span><h2>Overall teacher review</h2><p>Save the overall review independently. Question-level scores and remarks are optional and can be saved on each question.</p><form onSubmit={saveOverallReview}><div className="field-row"><label className="field"><span>Overall score override <em>Optional · 0 to 10</em></span><input type="number" min="0" max="10" step="0.01" value={teacherScore} onChange={(event) => setTeacherScore(event.target.value)} /></label></div><label className="field"><span>Overall remarks <em>Optional</em></span><textarea maxLength="5000" rows="4" value={teacherRemark} onChange={(event) => setTeacherRemark(event.target.value)} /></label><button type="submit" className="button button-primary" disabled={saving || savingQuestionId !== null}>{saving ? "Saving overall review…" : "Save overall review"}<span aria-hidden="true">→</span></button></form></section>}
+      </div>
       {!canReview && report.teacher_remark && <div className="report-review-summary"><span className="eyebrow">FACILITATOR REVIEW</span><h2>Teacher remarks</h2><p>{report.teacher_remark}</p></div>}
     </>}
   </div></ReportWorkspace>;
 }
 
-function InterviewerPortrait() {
+function InterviewerPortrait({ state }) {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    const host = canvas?.parentElement;
+    if (!context || !host) return undefined;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const spherePoints = Array.from({ length: 148 }, (_, index) => {
+      const y = 1 - (index / 147) * 2;
+      const radius = Math.sqrt(1 - y * y);
+      const angle = Math.PI * (3 - Math.sqrt(5)) * index;
+      return { x: Math.cos(angle) * radius, y, z: Math.sin(angle) * radius };
+    });
+    const palettes = {
+      greeting: [147, 197, 253], speaking: [96, 165, 250], listening: [248, 113, 113],
+      processing: [196, 181, 253], error: [252, 165, 165], paused: [148, 163, 184], ready: [147, 197, 253],
+    };
+    const color = palettes[state] || palettes.ready;
+    let frame = 0;
+    let animation = 0;
+    let width = 0;
+    let height = 0;
+    const resize = () => {
+      const rect = host.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      width = Math.max(1, rect.width);
+      height = Math.max(1, rect.height);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+    const render = () => {
+      frame += reducedMotion ? 0 : 0.009;
+      context.clearRect(0, 0, width, height);
+      const cx = width / 2;
+      const cy = height / 2;
+      const radius = Math.min(width * 0.34, height * 0.39, 112);
+      const speed = state === "processing" ? 1.6 : state === "listening" ? 0.45 : 1;
+      const rotation = frame * speed;
+      const cos = Math.cos(rotation);
+      const sin = Math.sin(rotation);
+      const dots = spherePoints.map((point) => {
+        const x = point.x * cos - point.z * sin;
+        const z = point.x * sin + point.z * cos;
+        const perspective = 2.8 / (2.8 - z * 0.42);
+        return { x: cx + x * radius * perspective, y: cy + point.y * radius * perspective,
+          z, scale: perspective, alpha: 0.26 + ((z + 1) / 2) * 0.7 };
+      }).sort((a, b) => a.z - b.z);
+      for (const dot of dots) {
+        const size = (1.05 + ((dot.z + 1) / 2) * 1.45) * dot.scale;
+        context.beginPath();
+        context.fillStyle = `rgba(${color.join(",")},${dot.alpha})`;
+        context.arc(dot.x, dot.y, size, 0, Math.PI * 2);
+        context.fill();
+      }
+      if (!reducedMotion) animation = window.requestAnimationFrame(render);
+    };
+    const resizeAndRender = () => { resize(); if (reducedMotion) render(); };
+    resizeAndRender();
+    if (!reducedMotion) render();
+    const observer = new ResizeObserver(resizeAndRender);
+    observer.observe(host);
+    return () => { observer.disconnect(); window.cancelAnimationFrame(animation); };
+  }, [state]);
   return (
-    <div className="ai-interviewer-portrait" role="img" aria-label="QueMe AI voice interviewer">
-      <span className="interviewer-brand-orbit"><BrandMark /></span>
-      <span className="interviewer-audio-icon"><AudioLines size={33} strokeWidth={1.6} /></span>
-      <span className="interviewer-voice-label">AI voice interviewer</span>
-      <span className="interviewer-voice-caption">Questions are spoken aloud</span>
+    <div className="ai-interviewer-portrait" role="img" aria-label={`AI interviewer visualizer: ${state}`}>
+      <canvas ref={canvasRef} className="interviewer-particle-canvas" aria-hidden="true" />
     </div>
   );
 }
+
+const INTERVIEW_GREETING = "Hello! Welcome to your QueMe interview. Take your time, listen carefully, and answer each question as clearly as you can. Let's begin.";
 
 function InterviewPage() {
   const { interviewId } = useParams();
@@ -809,12 +953,19 @@ function InterviewPage() {
   const [cameraLoading, setCameraLoading] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [interviewStarted, setInterviewStarted] = useState(false);
+  const [greetingComplete, setGreetingComplete] = useState(false);
+  const [questionSpokenId, setQuestionSpokenId] = useState(null);
   const [muted, setMuted] = useState(false);
   const [speechState, setSpeechState] = useState("ready");
+  const [speechStarting, setSpeechStarting] = useState(false);
+  const [speechPurpose, setSpeechPurpose] = useState("question");
   const [speechError, setSpeechError] = useState("");
   const [seconds, setSeconds] = useState(0);
   const [clip, setClip] = useState(null);
-  const [transcript, setTranscript] = useState("");
+  const [savedRecordingRetry, setSavedRecordingRetry] = useState(false);
+  const [microphoneMuted, setMicrophoneMuted] = useState(false);
+  const [recordingPaused, setRecordingPaused] = useState(false);
+  const [interviewPaused, setInterviewPaused] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const recorderRef = useRef(null);
@@ -823,12 +974,14 @@ function InterviewPage() {
   const cameraVideoRef = useRef(null);
   const mountedRef = useRef(true);
   const clipAudioRef = useRef(null);
+  const spokenQuestionRef = useRef(null);
+  const questionSpeechPendingRef = useRef(false);
+  const submissionIdsRef = useRef(new Map());
   const sessionStatusRef = useRef(session?.status);
   const question = session?.current_question;
   sessionStatusRef.current = session?.status;
   const speechSupported = typeof window !== "undefined" && "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
   const clipUrl = useMemo(() => (clip ? URL.createObjectURL(clip) : null), [clip]);
-
   useEffect(() => {
     let alive = true;
     api(`/interviews/${interviewId}`)
@@ -839,8 +992,29 @@ function InterviewPage() {
   }, [interviewId]);
 
   useEffect(() => {
-    try { setInterviewStarted(sessionStorage.getItem(`queme-interview-intro-${interviewId}`) === "played"); }
-    catch { setInterviewStarted(false); }
+    const hasUnfinishedAnswers = (session?.answer_processing?.pending || 0) > 0
+      || (session?.answer_processing?.retryable_failures || 0) > 0;
+    if (session?.status !== "PROCESSING" && !hasUnfinishedAnswers) return undefined;
+    let active = true;
+    const refresh = () => api(`/interviews/${interviewId}`)
+      .then((data) => { if (active) setSession(data); })
+      .catch((err) => { if (active) setError(err.message); });
+    refresh();
+    const timer = window.setInterval(refresh, 1800);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [interviewId, session?.status, session?.answer_processing?.pending, session?.answer_processing?.retryable_failures]);
+
+  useEffect(() => {
+    try {
+      const introPlayed = sessionStorage.getItem(`queme-interview-intro-v2-${interviewId}`) === "played";
+      setInterviewStarted(introPlayed);
+      setGreetingComplete(introPlayed);
+    } catch {
+      setInterviewStarted(false);
+      setGreetingComplete(false);
+    }
+    spokenQuestionRef.current = null;
+    setQuestionSpokenId(null);
   }, [interviewId]);
 
   useEffect(() => () => cancelSpeech(), [question?.interview_question_id, session?.status, interviewId]);
@@ -859,14 +1033,14 @@ function InterviewPage() {
   }, [cameraEnabled]);
 
   useEffect(() => {
-    if (session?.status === "COMPLETED" || session?.status === "CANCELLED") stopCamera();
+    if (["PROCESSING", "COMPLETED", "CANCELLED"].includes(session?.status)) stopCamera();
   }, [session?.status]);
 
   useEffect(() => {
-    if (!recording) return undefined;
+    if (!recording || recordingPaused) return undefined;
     const timer = window.setInterval(() => setSeconds((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
-  }, [recording]);
+  }, [recording, recordingPaused]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -877,7 +1051,7 @@ function InterviewPage() {
       cameraStreamRef.current?.getVideoTracks().forEach((track) => { track.onended = null; track.stop(); });
       cameraStreamRef.current = null;
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
-      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      if (recorderRef.current?.state === "recording" || recorderRef.current?.state === "paused") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
@@ -891,6 +1065,7 @@ function InterviewPage() {
     setWorking(true); setError("");
     let permissionStream;
     try {
+      if (!cameraEnabled && !(await enableCamera())) return;
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support microphone recording. Try a current version of Chrome, Edge, or Firefox.");
       permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       permissionStream.getTracks().forEach((track) => track.stop());
@@ -904,17 +1079,19 @@ function InterviewPage() {
   }
 
   async function enableCamera() {
+    if (cameraEnabled && cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live")) return true;
+    if (cameraLoading) return false;
     setCameraError("");
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("This browser does not support a local camera preview. You can continue without it.");
-      return;
+      setCameraError("This browser does not support camera access. Use a current browser with camera permission to start the interview.");
+      return false;
     }
     setCameraLoading(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
       if (!mountedRef.current || sessionStatusRef.current === "COMPLETED" || sessionStatusRef.current === "CANCELLED") {
         stream.getVideoTracks().forEach((track) => track.stop());
-        return;
+        return false;
       }
       cameraStreamRef.current = stream;
       stream.getVideoTracks().forEach((track) => {
@@ -926,18 +1103,20 @@ function InterviewPage() {
         };
       });
       setCameraEnabled(true);
+      return true;
     } catch (err) {
       const messages = {
         NotAllowedError: "Camera permission was blocked. Allow camera access in your browser settings, then try again.",
         SecurityError: "Camera access is blocked for this page. Use a secure connection and allow camera access.",
-        NotFoundError: "No camera was found. Connect a camera or continue without the preview.",
-        DevicesNotFoundError: "No camera was found. Connect a camera or continue without the preview.",
+        NotFoundError: "No camera was found. Connect a camera before starting the interview.",
+        DevicesNotFoundError: "No camera was found. Connect a camera before starting the interview.",
         NotReadableError: "The camera could not start. It may be in use by another application.",
         TrackStartError: "The camera could not start. It may be in use by another application.",
-        OverconstrainedError: "This camera could not use the requested preview settings. Try again or continue without it.",
+        OverconstrainedError: "This camera could not use the requested preview settings. Reconnect it or try another camera.",
         AbortError: "The camera start was interrupted. Please try again.",
       };
       setCameraError(messages[err.name] || "The camera preview could not start. Check your device and try again.");
+      return false;
     } finally {
       if (mountedRef.current) setCameraLoading(false);
     }
@@ -949,38 +1128,65 @@ function InterviewPage() {
     if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
     setCameraEnabled(false);
     setCameraLoading(false);
-    setCameraError("");
   }
 
   function playQuestion() {
-    if (!question?.question_text || muted) return;
+    if (!question?.question_text || muted || interviewPaused || !greetingComplete || questionSpeechPendingRef.current || speechStarting || speechState === "speaking") return;
+    const questionId = question.interview_question_id;
+    spokenQuestionRef.current = questionId;
+    questionSpeechPendingRef.current = true;
+    setQuestionSpokenId(null);
+    setSpeechPurpose("question");
     setSpeechError("");
+    setSpeechStarting(true);
     const success = speak(question.question_text, (state) => {
+      if (state === "speaking" || state === "ready" || state === "error") setSpeechStarting(false);
       setSpeechState(state === "error" ? "ready" : state);
-      if (state === "error") setSpeechError("Question audio could not play. You can still read the question below.");
+      if (state === "ready" || state === "error") questionSpeechPendingRef.current = false;
+      if (state === "ready") setQuestionSpokenId(questionId);
+      if (state === "error") setSpeechError("Question audio could not play. Retry playback before recording your answer.");
     });
-    if (!success) setSpeechError("Speech is unavailable in this browser. You can still read the question below.");
+    if (!success) {
+      questionSpeechPendingRef.current = false;
+      setSpeechStarting(false);
+      setSpeechError("Speech is unavailable in this browser. Retry playback before recording your answer.");
+    }
   }
 
   function beginInterview() {
-    setInterviewStarted(true);
-    try { sessionStorage.setItem(`queme-interview-intro-${interviewId}`, "played"); }
-    catch { /* The interview still works if session storage is unavailable. */ }
     setSpeechError("");
-    if (muted || !speechSupported) {
-      if (!speechSupported) setSpeechError("Speech is unavailable in this browser. You can still read each question below.");
+    if (muted) {
+      setSpeechError("Unmute the interviewer to hear the greeting and questions.");
       return;
     }
-    const intro = "Hello! Welcome to your QueMe interview. Take your time, listen carefully, and answer each question as clearly as you can. Let's begin.";
-    const success = speak(intro, (state) => {
+    if (!speechSupported) {
+      setSpeechError("Speech is unavailable in this browser. Use a current browser with speech synthesis enabled.");
+      return;
+    }
+    setInterviewStarted(true);
+    setGreetingComplete(false);
+    setSpeechPurpose("greeting");
+    setSpeechStarting(true);
+    const success = speak(INTERVIEW_GREETING, (state) => {
+      if (state === "speaking" || state === "ready" || state === "error") setSpeechStarting(false);
       setSpeechState(state === "error" ? "ready" : state);
-      if (state === "ready") playQuestion();
-      if (state === "error") setSpeechError("Question audio could not play. You can still read the question below.");
+      if (state === "ready") {
+        setGreetingComplete(true);
+        try { sessionStorage.setItem(`queme-interview-intro-v2-${interviewId}`, "played"); }
+        catch { /* The current interview remains usable if session storage is unavailable. */ }
+      }
+      if (state === "error") setSpeechError("The greeting could not play. Retry it before continuing.");
     });
-    if (!success) setSpeechError("Speech is unavailable in this browser. You can still read each question below.");
+    if (!success) {
+      setSpeechStarting(false);
+      setSpeechError("The greeting could not play. Check browser audio permissions and retry.");
+      setInterviewStarted(false);
+      setGreetingComplete(false);
+    }
   }
 
   function toggleMute() {
+    if (speechState === "speaking" || speechStarting) return;
     const nextMuted = !muted;
     if (nextMuted) {
       cancelSpeech();
@@ -989,9 +1195,49 @@ function InterviewPage() {
     setMuted(nextMuted);
   }
 
+  function toggleMicrophoneMute() {
+    const nextMuted = !microphoneMuted;
+    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !nextMuted; });
+    setMicrophoneMuted(nextMuted);
+  }
+
+  function toggleInterviewPause() {
+    if (working || recordingStarting || speechStarting) return;
+    if (interviewPaused) {
+      if (speechSupported) window.speechSynthesis.resume();
+      if (recorderRef.current?.state === "paused") recorderRef.current.resume();
+      setRecordingPaused(false);
+      setInterviewPaused(false);
+      return;
+    }
+    if (speechSupported && window.speechSynthesis.speaking) window.speechSynthesis.pause();
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.pause();
+      setRecordingPaused(true);
+    }
+    clipAudioRef.current?.pause();
+    setInterviewPaused(true);
+  }
+
+  useEffect(() => {
+    if (
+      !interviewStarted || !greetingComplete || !question || muted || interviewPaused ||
+      session?.status !== "IN_PROGRESS" || spokenQuestionRef.current === question.interview_question_id
+    ) return;
+    playQuestion();
+  }, [interviewStarted, greetingComplete, question?.interview_question_id, muted, interviewPaused, session?.status]);
+
   async function beginRecording() {
-    if (recording || recordingStarting || working) return;
-    setError(""); setNotice(""); setTranscript(""); setSeconds(0);
+    if (recording || recordingStarting || working || interviewPaused) return;
+    if (!cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live")) {
+      setCameraError("The camera is required. Reconnect it before recording your answer.");
+      return;
+    }
+    if (!question || questionSpokenId !== question.interview_question_id) {
+      setError("Listen to the current question before recording your answer.");
+      return;
+    }
+    setError(""); setNotice(""); setSeconds(0); setMicrophoneMuted(false); setRecordingPaused(false); setSavedRecordingRetry(false);
     setRecordingStarting(true);
     try {
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
@@ -1014,6 +1260,8 @@ function InterviewPage() {
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         if (mountedRef.current) {
           setRecording(false);
+          setRecordingPaused(false);
+          setMicrophoneMuted(false);
           if (blob.size) setClip(blob);
           else setError("No audio was captured. Check your microphone and record again.");
         }
@@ -1023,6 +1271,8 @@ function InterviewPage() {
       recorder.onerror = () => {
         if (mountedRef.current) {
           setRecording(false);
+          setRecordingPaused(false);
+          setMicrophoneMuted(false);
           setError("Recording stopped unexpectedly. Check your microphone and try again.");
         }
         stream.getTracks().forEach((track) => track.stop());
@@ -1038,16 +1288,28 @@ function InterviewPage() {
   }
 
   function stopRecording() {
-    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+    if (recorderRef.current?.state === "recording" || recorderRef.current?.state === "paused") recorderRef.current.stop();
     setRecording(false);
+    setRecordingPaused(false);
   }
 
   async function submitRecording() {
-    if (!clip || !question) return;
+    if (!clip || !question || working || interviewPaused) return;
     clipAudioRef.current?.pause();
     setPlayingClip(false);
     setWorking(true); setError(""); setNotice("");
     const form = new FormData();
+    const questionId = question.interview_question_id;
+    let submissionId = submissionIdsRef.current.get(questionId);
+    if (!submissionId) {
+      submissionId = window.crypto?.randomUUID?.()
+        || "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+          const random = Math.random() * 16 | 0;
+          return (character === "x" ? random : (random & 0x3 | 0x8)).toString(16);
+        });
+      submissionIdsRef.current.set(questionId, submissionId);
+    }
+    form.append("submission_id", submissionId);
     const extension = clip.type.includes("ogg") ? "ogg" : clip.type.includes("mp4") ? "m4a" : clip.type.includes("wav") ? "wav" : "webm";
     form.append("audio", clip, `answer.${extension}`);
     try {
@@ -1055,32 +1317,65 @@ function InterviewPage() {
       cancelSpeech();
       setSpeechState("ready");
       setSession(result.session);
+      setRecordingPaused(false);
+      submissionIdsRef.current.delete(questionId);
       if (result.action === "retry") {
         setNotice(result.message);
         setClip(null);
+        setSavedRecordingRetry(false);
+        if (result.transcription_status && result.transcription_status !== "OK") {
+          const savedAnswer = result.session?.answers?.find(
+            (answer) => answer.interview_question_id === question.interview_question_id
+          );
+          if (savedAnswer?.audio_url) {
+            try {
+              const savedAudio = await api(savedAnswer.audio_url);
+              if (savedAudio instanceof Blob) {
+                setClip(savedAudio);
+                setSavedRecordingRetry(true);
+              }
+            } catch {
+              setNotice(`${result.message} You can record the answer again to retry.`);
+            }
+          }
+        }
       } else if (result.action === "repeat") {
         setNotice(result.message);
         setClip(null);
         if (result.session.current_question && !muted && interviewStarted) playQuestion();
       } else {
-        setTranscript(result.transcript || "");
         setClip(null);
-        setNotice(result.action === "complete" ? "Your interview is complete. Nice work." : "Answer saved. Moving on.");
+        setSavedRecordingRetry(false);
+        setNotice(result.action === "processing"
+          ? "Your answer is saved. We’ll finish processing it and prepare your report."
+          : result.action === "complete"
+          ? "Your interview is complete. Nice work."
+          : "");
       }
     } catch (err) {
       setError(err.message);
     } finally { setWorking(false); }
   }
 
+  function skipQuestion() {
+    if (window.confirm("Skip this question? It will be marked for teacher review.")) advance("SKIP");
+  }
+
+  function finishInterview() {
+    if (window.confirm("End this interview now? Unanswered questions will be marked for teacher review.")) advance("DONE");
+  }
+
   async function advance(intent) {
-    if (!session || !question) return;
+    if (!session || !question || working || recording || clip || interviewPaused) return;
     cancelSpeech();
     setSpeechState("ready");
-    setWorking(true); setError(""); setNotice(""); setClip(null); setTranscript("");
+    setWorking(true); setError(""); setNotice(""); setClip(null);
     try {
       const result = await api(`/interviews/${interviewId}/advance`, { method: "POST", body: JSON.stringify({ intent }) });
       setSession(result.session);
-      setNotice(result.action === "complete" ? "Your interview is complete. Nice work." : intent === "SKIP" ? "Question skipped." : "Moving to the next question.");
+      setNotice(result.action === "processing"
+        ? "Your interview is submitted. We’ll prepare the report after processing finishes."
+        : intent === "SKIP" ? "Question skipped." : "Moving to the next question.");
     } catch (err) { setError(err.message); }
     finally { setWorking(false); }
   }
@@ -1090,7 +1385,36 @@ function InterviewPage() {
   const progress = session?.total_questions ? (session.completed_questions / session.total_questions) * 100 : 0;
   const isScheduled = session?.status === "SCHEDULED";
   const isComplete = session?.status === "COMPLETED";
-  const interviewerStatus = error || speechError ? "Error" : recordingStarting ? "Starting microphone" : working ? (clip ? "Uploading and analyzing answer" : isScheduled ? "Preparing interview" : "Processing interview") : recording ? "Listening to your answer" : playingClip ? "Playing back your answer" : speechState === "speaking" ? "Speaking" : notice?.toLowerCase().includes("answer saved") ? "Answer saved" : isComplete ? "Interview complete" : session?.status === "CANCELLED" ? "Interview cancelled" : "Ready";
+  const visualizerState = error || speechError || cameraError
+    ? "error"
+    : interviewPaused
+    ? "paused"
+    : recording
+    ? "listening"
+    : session?.status === "PROCESSING" || working || speechStarting
+    ? "processing"
+    : speechState === "speaking"
+    ? speechPurpose === "greeting" ? "greeting" : "speaking"
+    : "ready";
+  const interviewerStatus = visualizerState === "error"
+    ? "Needs attention"
+    : visualizerState === "paused"
+    ? "Paused"
+    : visualizerState === "listening"
+    ? recordingPaused ? "Recording paused" : microphoneMuted ? "Microphone muted" : "Listening to your answer"
+    : visualizerState === "processing"
+    ? session?.status === "PROCESSING" ? "Preparing your report" : working ? "Saving your answer" : isScheduled ? "Preparing interview" : "Processing answer"
+    : visualizerState === "greeting"
+    ? "Greeting"
+    : visualizerState === "speaking"
+    ? "Speaking question"
+    : playingClip
+    ? "Playing back your answer"
+    : isComplete
+    ? "Interview complete"
+    : session?.status === "CANCELLED"
+    ? "Interview cancelled"
+    : "Ready";
 
   return (
     <>
@@ -1099,9 +1423,9 @@ function InterviewPage() {
         <div className="interview-topline"><button className="text-button" onClick={() => navigate("/dashboard")}>← Dashboard</button><span className="interview-session-label">PRACTICE SESSION <span>·</span> {session?.template_title || "Interview"}</span><span className="privacy-chip">◈ Private session</span></div>
         {error && <div className="alert alert-error" role="alert">{error}<button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
         <section className="interview-room-grid">
-          <aside className={`interviewer-card${speechState === "speaking" ? " is-speaking" : ""}`} aria-label="AI interviewer">
-            <div className="interviewer-card-top"><span className="ai-badge"><i />AI VOICE INTERVIEWER</span><button className="speech-toggle" type="button" onClick={toggleMute} disabled={!speechSupported} aria-pressed={muted} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} title={speechSupported ? (muted ? "Unmute voice" : "Mute voice") : "Speech is unavailable in this browser"}>{muted ? <AudioLines size={16} /> : <Headphones size={16} />}<span>{muted ? "Unmute" : "Mute"}</span></button></div>
-            <div className="interviewer-portrait-wrap"><div className="interviewer-halo" /><InterviewerPortrait /><span className="interviewer-spark interviewer-spark-one">✳</span><span className="interviewer-spark interviewer-spark-two">✦</span></div>
+          <aside className={`interviewer-card visualizer-${visualizerState}${speechState === "speaking" ? " is-speaking" : ""}`} aria-label="AI interviewer">
+            <div className="interviewer-card-top"><span className="ai-badge"><i />AI VOICE INTERVIEWER</span><button className="speech-toggle" type="button" onClick={toggleMute} disabled={!speechSupported || speechState === "speaking" || speechStarting} aria-pressed={muted} aria-label={muted ? "Unmute interviewer voice" : "Mute interviewer voice"} title={speechSupported ? (muted ? "Unmute voice" : "Mute voice") : "Speech is unavailable in this browser"}>{muted ? <AudioLines size={16} /> : <Headphones size={16} />}<span>{muted ? "Unmute" : "Mute"}</span></button></div>
+            <div className="interviewer-portrait-wrap"><div className="interviewer-halo" /><InterviewerPortrait state={visualizerState} /></div>
             <div className="interviewer-card-copy"><span className="interviewer-name">QueMe AI Interviewer</span><span className="interviewer-status" aria-live="polite"><i className={recording ? "status-dot is-recording" : speechState === "speaking" ? "status-dot is-speaking" : "status-dot"} />{interviewerStatus}</span></div>
             {speechState === "speaking" && <div className="interviewer-wave" aria-label="Interviewer is speaking" role="img"><i /><i /><i /><i /><i /><i /><i /><i /><i /></div>}
             {session?.scheduled_at && <div className="interviewer-schedule">Scheduled {new Date(session.scheduled_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</div>}
@@ -1114,43 +1438,57 @@ function InterviewPage() {
               <div className="consent-panel">
                 <div className="step-label"><span>01</span> BEFORE YOU BEGIN</div>
                 <h2>Settle in and get ready.</h2>
-                <p>Your interviewer will ask the questions aloud. You can listen again at any time. Your microphone is used only to record your answers for this practice interview, and your recordings and transcripts are shared with you and your assigned teacher.</p>
-                <label className="consent-check"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} /><span>I understand and consent to audio recording for this practice interview.</span></label>
-                <button className="button button-primary" disabled={!consent || working} onClick={startSession}>{working ? "Checking microphone…" : "Give consent & continue"}<span aria-hidden="true">→</span></button>
-                <p className="consent-footnote">Your browser will ask you to allow microphone access next.</p>
+                <p>Your camera preview is required and stays on this device; video is not recorded or uploaded. Your microphone records interview answers, which are transcribed and shared with you and your assigned teacher.</p>
+                <label className="consent-check"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} /><span>I consent to the local camera preview and audio recording for this practice interview.</span></label>
+                <button className="button button-primary" disabled={!consent || working || cameraLoading} onClick={startSession}>{working ? "Checking camera and microphone…" : "Give consent & continue"}<span aria-hidden="true">→</span></button>
+                <p className="consent-footnote">Your browser will ask you to allow camera and microphone access.</p>
               </div>
             )}
 
-            {session?.status === "IN_PROGRESS" && question && !interviewStarted && (
+            {session?.status === "IN_PROGRESS" && question && (!interviewStarted || !greetingComplete) && (
               <div className="interview-intro-card">
-                <span className="intro-kicker">A CONVERSATION AT YOUR PACE</span><h2>Ready when you are.</h2><p>Take your time, listen carefully, and answer each question as clearly as you can. You can replay questions before answering.</p>
-                <button className="button button-primary" disabled={working} onClick={beginInterview}>Start interview<span aria-hidden="true">→</span></button>
+                <span className="intro-kicker">A CONVERSATION AT YOUR PACE</span><h2>{speechStarting ? "Your interviewer is greeting you." : interviewStarted ? "Let's retry the greeting." : "Ready when you are."}</h2><p>Listen carefully to each spoken question. Recording unlocks after the interviewer finishes speaking.</p>
+                <button className="button button-primary" disabled={working || muted || !speechSupported || speechStarting || speechState === "speaking"} onClick={beginInterview}>{speechStarting || speechState === "speaking" ? "Greeting…" : interviewStarted ? "Retry greeting" : "Start interview"}<span aria-hidden="true">→</span></button>
                 {speechError && <p className="speech-fallback" role="status">{speechError}</p>}
               </div>
             )}
 
-            {session?.status === "IN_PROGRESS" && question && interviewStarted && (
+            {session?.status === "IN_PROGRESS" && question && interviewStarted && greetingComplete && (
               <div className="question-panel">
                 <div className="step-label"><span>{String(question.question_order).padStart(2, "0")}</span> QUESTION {String(question.question_order).padStart(2, "0")} OF {String(session.total_questions).padStart(2, "0")}{question.is_followup ? " · FOLLOW-UP" : ""}</div>
                 <div className="question-type-row"><span className="question-type">{question.question_type || "Interview question"}</span><span className="difficulty-tag">{question.difficulty || "Practice"} level</span></div>
-                <h2 className="question-text">{question.question_text}</h2>
-                <div className="speech-controls"><button className="button button-listen" type="button" disabled={!speechSupported || working || recording || playingClip} onClick={playQuestion}><Play size={15} aria-hidden="true" />{speechState === "speaking" ? "Speaking…" : "Listen to question"}</button><button className="text-button" type="button" disabled={!speechSupported || working || recording || playingClip} onClick={playQuestion}>Replay question</button></div>
+                {questionSpokenId === question.interview_question_id || speechState === "speaking" && speechPurpose === "question" || speechError && speechPurpose === "question"
+                  ? <h2 className="question-text">{question.question_text}</h2>
+                  : <p className="question-audio-pending" role="status">Preparing the spoken question…</p>}
+                <div className="speech-controls"><button className="button button-listen" type="button" disabled={!speechSupported || muted || working || recording || playingClip || interviewPaused || speechState === "speaking" || speechStarting} onClick={playQuestion}><Play size={15} aria-hidden="true" />{speechState === "speaking" || speechStarting ? "Speaking…" : questionSpokenId === question.interview_question_id ? "Listen again" : "Question audio loading…"}</button><button className="text-button" type="button" disabled={!speechSupported || muted || working || recording || playingClip || interviewPaused || speechState === "speaking" || speechStarting} onClick={playQuestion}>Replay question</button></div>
                 {speechError && <p className="speech-fallback" role="status">{speechError}</p>}
-                <p className="recording-instruction">When you’re ready, start recording. You can listen back before submitting.</p>
+                <p className="recording-instruction">The recording control unlocks after the question has been spoken. You can listen back before submitting.</p>
 
                 <div className={`recording-box ${recording ? "is-recording" : ""}`}>
-                  {!recording && !clip && <><span className="mic-mark">◎</span><div><strong>{recordingStarting ? "Starting microphone…" : "Ready to record"}</strong><p>{recordingStarting ? "Allow microphone access if your browser asks." : "Start when you feel comfortable. You can retry if needed."}</p></div><button className="button button-primary" disabled={working || recordingStarting} onClick={beginRecording}>{recordingStarting ? "Starting…" : "Start recording"}<span aria-hidden="true">●</span></button></>}
-                  {recording && <><span className="recording-pulse" /><div><strong>Listening to your answer</strong><p>Your answer is being recorded.</p></div><span className="record-timer">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</span><button className="button button-dark" onClick={stopRecording}>Stop recording</button></>}
-                  {!recording && clip && <><span className="mic-mark mic-ready">✓</span><div className="clip-copy"><strong>{working ? "Uploading and analyzing…" : "Recording ready"}</strong><p>{working ? "Keep this page open while your answer is processed." : "Listen back or record a new answer before submitting."}</p><audio ref={clipAudioRef} controls src={clipUrl} onPlay={() => { cancelSpeech(); setSpeechState("ready"); setPlayingClip(true); }} onPause={() => setPlayingClip(false)} onEnded={() => setPlayingClip(false)} /></div><button className="button button-outline button-small" disabled={working} onClick={beginRecording}>Re-record</button><button className="button button-primary" disabled={working} onClick={submitRecording}>{working ? "Processing…" : "Submit answer"}<span aria-hidden="true">→</span></button></>}
+                  {!recording && !clip && <><span className="mic-mark">◎</span><div><strong>{recordingStarting ? "Starting microphone…" : interviewPaused ? "Interview paused" : questionSpokenId === question.interview_question_id ? "Ready to record" : "Waiting for question audio"}</strong><p>{recordingStarting ? "Allow microphone access if your browser asks." : cameraError || (cameraEnabled ? "Your camera is on. Start when you feel comfortable." : "Reconnect your camera before recording.")}</p></div><button className="button button-primary" disabled={working || recordingStarting || interviewPaused || !cameraEnabled || questionSpokenId !== question.interview_question_id} onClick={beginRecording}>{recordingStarting ? "Starting…" : "Start recording"}<span aria-hidden="true">●</span></button></>}
+                  {recording && <><span className="recording-pulse" /><div><strong>{recordingPaused ? "Recording paused" : microphoneMuted ? "Microphone muted" : "Listening to your answer"}</strong><p>{recordingPaused ? "Resume to continue recording." : microphoneMuted ? "Your voice is muted until you unmute." : "Your answer is being recorded."}</p></div><span className="record-timer">{String(Math.floor(seconds / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}</span><button className="button button-outline button-small" type="button" onClick={toggleMicrophoneMute} disabled={interviewPaused}>{microphoneMuted ? <Mic size={14} /> : <MicOff size={14} />}{microphoneMuted ? "Unmute mic" : "Mute mic"}</button><button className="button button-dark" onClick={stopRecording}>Stop recording</button></>}
+                  {!recording && clip && <><span className="mic-mark mic-ready">✓</span><div className="clip-copy"><strong>{working ? "Uploading and analyzing…" : savedRecordingRetry ? "Saved recording ready to retry" : "Recording ready"}</strong><p>{working ? "Keep this page open while your answer is processed." : savedRecordingRetry ? "The original recording was retained and is ready for another transcription attempt." : "Listen back or record a new answer before submitting."}</p><audio ref={clipAudioRef} controls src={clipUrl} onPlay={() => { cancelSpeech(); setSpeechState("ready"); setPlayingClip(true); }} onPause={() => setPlayingClip(false)} onEnded={() => setPlayingClip(false)} /></div><button className="button button-outline button-small" disabled={working || interviewPaused} onClick={beginRecording}>Re-record</button><button className="button button-primary" disabled={working || interviewPaused} onClick={submitRecording}>{working ? "Processing…" : savedRecordingRetry ? "Retry transcription" : "Submit answer"}<span aria-hidden="true">→</span></button></>}
                 </div>
 
                 {notice && <div className="alert alert-info" role="status">{notice}</div>}
-                {transcript && <div className="transcript-box"><span className="eyebrow">YOUR TRANSCRIPT</span><p>{transcript}</p></div>}
-                <div className="question-actions"><button className="text-button" disabled={working || recording || Boolean(clip)} onClick={() => advance("SKIP")}>Skip question <span aria-hidden="true">→</span></button><button className="text-button text-button-muted" disabled={working || recording || Boolean(clip)} onClick={() => advance("DONE")}>Finish interview</button></div>
+                <div className="question-actions"><button className="text-button" disabled={working || recording || Boolean(clip) || interviewPaused} onClick={skipQuestion}>Skip question <span aria-hidden="true">→</span></button><button className="button button-outline button-small" type="button" onClick={toggleInterviewPause} disabled={working || recordingStarting}>{interviewPaused ? <Play size={14} /> : <Pause size={14} />}{interviewPaused ? "Resume interview" : "Pause interview"}</button><button className="text-button text-button-muted" disabled={working || recording || Boolean(clip) || interviewPaused} onClick={finishInterview}>End interview</button></div>
               </div>
             )}
 
-            {(isComplete || session?.status === "COMPLETED") && <div className="completion-panel completion-with-answers"><div className="completion-check">✓</div><div className="step-label">SESSION COMPLETE</div><h2>You showed up. That counts.</h2><p>Your report is ready. Some answers may need a teacher’s review when automatic evaluation is unavailable.</p>
+            {session?.status === "PROCESSING" && <div className="completion-panel interview-processing-panel" role="status" aria-live="polite">
+              <span className="interview-processing-spinner" aria-hidden="true" />
+              <div className="step-label">FINALIZING YOUR INTERVIEW</div>
+              <h2>Your answers are being reviewed.</h2>
+              <p>Transcription, audio analysis, and evaluation run in the background. This page updates when the report is ready.</p>
+              <div className="interview-processing-counts">
+                <span><strong>{session.answer_processing?.successfully_evaluated || 0}</strong> evaluated</span>
+                <span><strong>{session.answer_processing?.pending || 0}</strong> processing</span>
+                <span><strong>{session.answer_processing?.retryable_failures || 0}</strong> awaiting retry</span>
+                <span><strong>{session.answer_processing?.teacher_review || 0}</strong> for teacher review</span>
+              </div>
+            </div>}
+
+            {(isComplete || session?.status === "COMPLETED") && <div className="completion-panel completion-with-answers"><div className="completion-check">✓</div><div className="step-label">SESSION COMPLETE</div><h2>You showed up. That counts.</h2><p>Your report is ready. It distinguishes evaluated answers from recordings that need teacher review.</p>
               {session.answers?.length > 0 && <div className="saved-answers"><div className="eyebrow">YOUR RECORDINGS</div>{session.answers.map((answer) => <div className="saved-answer" key={answer.interview_question_id}><div><strong>Question {answer.question_order}</strong><p>{answer.question_text}</p></div><AuthenticatedAudio path={answer.audio_url} /></div>)}</div>}
               <button className="button button-outline" onClick={() => navigate(`/interviews/${interviewId}/report`)}>View report<span aria-hidden="true">→</span></button>
               <button className="button button-primary" onClick={() => navigate("/dashboard")}>Back to dashboard<span aria-hidden="true">→</span></button></div>}
@@ -1158,14 +1496,14 @@ function InterviewPage() {
             {session && session.status === "IN_PROGRESS" && !question && <div className="completion-panel"><h2>No questions are available.</h2><p>Please contact your teacher.</p></div>}
           </section>
 
-          <aside className={`student-camera-card${cameraEnabled ? " is-on" : ""}`} aria-label="Optional student camera preview">
-            <div className="student-camera-heading"><div><span className="rail-kicker">OPTIONAL PREVIEW</span><h2>Your camera</h2></div><span className={`camera-state${cameraEnabled ? " is-on" : ""}`}>{cameraLoading ? "Starting" : cameraEnabled ? "Camera is on" : "Camera is off"}</span></div>
+          <aside className={`student-camera-card${cameraEnabled ? " is-on" : ""}`} aria-label="Required student camera preview">
+            <div className="student-camera-heading"><div><span className="rail-kicker">REQUIRED · LOCAL PREVIEW</span><h2>Your camera</h2></div><span className={`camera-state${cameraEnabled ? " is-on" : ""}`}>{cameraLoading ? "Starting" : cameraEnabled ? "Camera is on" : "Camera required"}</span></div>
             <div className={`student-camera-frame${cameraEnabled ? " has-video" : ""}`}>
-              {cameraEnabled ? <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Your live camera preview. Video stays on this device." /> : cameraLoading ? <div className="camera-placeholder" role="status"><span className="camera-spinner" /><strong>Starting camera…</strong></div> : <div className="camera-placeholder"><VideoOff size={27} aria-hidden="true" /><strong>Camera is off</strong><span>Enable it only if you want a self-preview.</span></div>}
+              {cameraEnabled ? <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Your live camera preview. Video stays on this device." /> : cameraLoading ? <div className="camera-placeholder" role="status"><span className="camera-spinner" /><strong>Starting camera…</strong></div> : <div className="camera-placeholder"><VideoOff size={27} aria-hidden="true" /><strong>Camera required to start</strong><span>Allow camera access to continue.</span></div>}
             </div>
             {cameraError && <p className="camera-error" role="alert">{cameraError}</p>}
-            <p className="camera-privacy">Your preview stays on this device. Camera video is not recorded, uploaded, or analyzed.</p>
-            {cameraEnabled ? <button className="button camera-toggle-off" type="button" onClick={stopCamera}><VideoOff size={15} />Turn camera off</button> : <button className="button camera-toggle-on" type="button" onClick={enableCamera} disabled={!session || cameraLoading || isComplete || session?.status === "CANCELLED"}><Video size={15} />{cameraLoading ? "Starting camera…" : cameraError ? "Retry camera" : "Enable camera"}</button>}
+            <p className="camera-privacy">The live preview stays on this device. Camera video is not recorded, uploaded, or analyzed.</p>
+            {!cameraEnabled && <button className="button camera-toggle-on" type="button" onClick={enableCamera} disabled={!session || cameraLoading || isComplete || session?.status === "CANCELLED" || isScheduled && !consent}><Video size={15} />{cameraLoading ? "Starting camera…" : cameraError ? "Reconnect camera" : "Start camera"}</button>}
           </aside>
         </section>
       </main>

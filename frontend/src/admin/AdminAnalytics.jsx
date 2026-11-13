@@ -114,7 +114,7 @@ export function AdminAnalytics({ user }) {
             <div className="kpi-body">
               <span className="kpi-label">Campus Average Score</span>
               <strong className="kpi-value">
-                {analytics?.average_score ? `${analytics.average_score}%` : "—"}
+                {analytics?.average_score != null ? `${Number(analytics.average_score).toFixed(1)}/10` : "—"}
               </strong>
               <small className="kpi-sub">Across completed interviews</small>
             </div>

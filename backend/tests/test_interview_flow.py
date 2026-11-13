@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,12 +17,13 @@ from queme.models import (
     QuestionBank,
     User,
 )
-from queme.services.reports import evaluate_interview_answer, generate_interview_report, summarize_interview_audio
+from queme.services.reports import build_improvement_plan, evaluate_interview_answer, generate_interview_report, summarize_interview_audio
 from queme.services.reports import build_analysis_coverage
 from queme.models import AudioAnalysis
 from queme.services.audio_analysis import detect_intent
 from queme.services.llm import evaluate_answer
 from queme.blueprints.teacher import _rubric_criteria
+from queme.blueprints.session import _adaptive_target_difficulty
 
 
 class InterviewFlowTests(unittest.TestCase):
@@ -187,51 +189,151 @@ class InterviewFlowTests(unittest.TestCase):
         self.assertEqual(response.json["final_score"], 8.25)
         self.assertEqual(response.json["score_source"], "TEACHER")
 
-    def test_usable_answer_inserts_followup_before_remaining_questions(self):
+    def test_adaptive_answer_uses_only_completed_scores_and_never_moves_selected_questions(self):
+        harder_question = QuestionBank(
+            created_by=self.teacher.user_id,
+            question_text="Explain a Python generator.",
+            question_type="technical",
+            difficulty="hard",
+        )
+        medium_question = QuestionBank(
+            created_by=self.teacher.user_id,
+            question_text="Explain Python decorators.",
+            question_type="technical",
+            difficulty="medium",
+        )
+        db.session.add_all([harder_question, medium_question])
+        db.session.flush()
+        harder_row = InterviewQuestion(
+            interview_id=self.interview.interview_id,
+            question_id=harder_question.question_id,
+            question_order=3,
+            is_followup=False,
+        )
+        medium_row = InterviewQuestion(
+            interview_id=self.interview.interview_id,
+            question_id=medium_question.question_id,
+            question_order=4,
+            is_followup=False,
+        )
+        db.session.add_all([harder_row, medium_row])
+        db.session.commit()
         self.start_interview()
-        metrics = {
-            "detected_intent": "ANSWER",
-            "audio_usable": True,
-            "audio_quality_status": "OK",
-            "delivery_score": 7.0,
-            "analysis_json": {"word_timestamps": []},
-        }
         storage = type("StorageStub", (), {"put": lambda _self, key, _data, content_type: key})()
-        with (
-            patch("queme.blueprints.session.transcribe", return_value={"transcript": "A concise answer.", "words": [], "status": "OK"}),
-            patch("queme.blueprints.session.analyze_audio", return_value=metrics),
-            patch("queme.blueprints.session.evaluate_interview_answer"),
-            patch("queme.blueprints.session.generate_followup", return_value="Can you give an example?"),
-            patch("queme.blueprints.session.get_storage", return_value=storage),
+        answer_url = f"/api/interviews/{self.interview.interview_id}/questions/{self.first.interview_question_id}/answer"
+        with patch("queme.services.answer_jobs.transcribe") as transcribe_answer, patch(
+            "queme.blueprints.session.get_storage", return_value=storage
         ):
             response = self.client.post(
-                f"/api/interviews/{self.interview.interview_id}/questions/{self.first.interview_question_id}/answer",
+                answer_url,
                 data={"audio": (io.BytesIO(b"fake audio"), "answer.webm", "audio/webm")},
                 headers=self.student_headers,
             )
+        transcribe_answer.assert_not_called()
 
         self.assertEqual(response.status_code, 200, response.json)
         session = response.json["session"]
-        self.assertEqual(session["total_questions"], 3)
+        self.assertEqual(session["total_questions"], 4)
         self.assertEqual(session["current_index"], 1)
-        self.assertTrue(session["current_question"]["is_followup"])
-        self.assertEqual(session["current_question"]["question_text"], "Can you give an example?")
+        self.assertEqual(session["current_question"]["question_id"], self.question_two.question_id)
+        self.assertEqual(session["answer_processing"]["pending"], 1)
+        self.assertEqual(self.first.processing_job.status, "QUEUED")
 
-        ordered = InterviewQuestion.query.filter_by(interview_id=self.interview.interview_id).order_by(InterviewQuestion.question_order).all()
-        self.assertEqual([row.question_order for row in ordered], [1, 2, 3])
-        self.assertTrue(ordered[1].is_followup)
+        # A late evaluation cannot reorder the question already selected for the student.
+        self.first.content_score = 9.0
+        self.first.final_ai_score = 8.4
+        self.first.processing_job.status = "COMPLETED"
+        self.first.processing_job.outcome = "EVALUATED"
+        self.first.processing_job.finished_at = datetime.utcnow()
+        db.session.commit()
+
+        with patch("queme.blueprints.session.get_storage", return_value=storage):
+            next_response = self.client.post(
+                f"/api/interviews/{self.interview.interview_id}/questions/{self.second.interview_question_id}/answer",
+                data={"audio": (io.BytesIO(b"next audio"), "answer.webm", "audio/webm")},
+                headers=self.student_headers,
+            )
+        self.assertEqual(next_response.status_code, 200, next_response.json)
+        self.assertEqual(next_response.json["session"]["current_question"]["question_id"], harder_question.question_id)
+
+        ordered = InterviewQuestion.query.filter_by(interview_id=self.interview.interview_id).order_by(
+            InterviewQuestion.question_order
+        ).all()
+        self.assertEqual([row.question_id for row in ordered], [
+            self.question_one.question_id,
+            self.question_two.question_id,
+            harder_question.question_id,
+            medium_question.question_id,
+        ])
+        self.assertFalse(any(row.is_followup for row in ordered))
         self.assertIsNotNone(ordered[1].asked_at)
-        self.assertEqual(ordered[2].question_id, self.question_two.question_id)
-        self.assertIn(f"questions/{self.first.interview_question_id}/answer.webm", ordered[0].answer_audio_path)
+        self.assertIn(f"questions/{self.first.interview_question_id}/answers/", ordered[0].answer_audio_path)
 
-        skipped = self.client.post(
-            f"/api/interviews/{self.interview.interview_id}/advance",
-            json={"intent": "SKIP"},
-            headers=self.student_headers,
-        )
-        self.assertEqual(skipped.status_code, 200)
-        self.assertEqual(skipped.json["session"]["current_index"], 2)
-        self.assertEqual(skipped.json["session"]["current_question"]["question_text"], "What is a primary key?")
+    def test_adaptive_thresholds_use_the_normalized_ten_point_content_scale(self):
+        with self.app.app_context():
+            self.assertEqual(_adaptive_target_difficulty("easy", 9.0), "medium")
+            self.assertEqual(_adaptive_target_difficulty("medium", 4.5), "easy")
+            self.assertEqual(_adaptive_target_difficulty("medium", 6.5), "medium")
+            self.assertEqual(_adaptive_target_difficulty("hard", 10.0), "hard")
+            self.assertEqual(_adaptive_target_difficulty("easy", None), "easy")
+
+    def test_answer_submission_is_durable_idempotent_and_does_not_wait(self):
+        self.start_interview()
+        stored = {}
+        puts = []
+
+        class StorageStub:
+            def put(self, key, data, content_type=None):
+                puts.append(key)
+                stored[key] = data
+                return key
+
+            def delete(self, key):
+                stored.pop(key, None)
+
+        answer_url = f"/api/interviews/{self.interview.interview_id}/questions/{self.first.interview_question_id}/answer"
+        submission_id = "ef932d5a-26cb-4fb7-a0a0-5860672bfb27"
+        data = {
+            "submission_id": submission_id,
+            "audio": (io.BytesIO(b"first recording"), "answer.webm", "audio/webm"),
+        }
+        with patch("queme.services.answer_jobs.transcribe") as transcription, patch(
+            "queme.blueprints.session.get_storage", return_value=StorageStub()
+        ):
+            accepted = self.client.post(answer_url, data=data, headers=self.student_headers)
+            self.assertEqual(accepted.status_code, 200, accepted.json)
+            self.assertEqual(accepted.json["action"], "next")
+            self.assertEqual(accepted.json["session"]["current_index"], 1)
+            self.assertEqual(accepted.json["session"]["answer_processing"]["pending"], 1)
+            self.assertEqual(self.first.processing_job.status, "QUEUED")
+            transcription.assert_not_called()
+
+            duplicate = self.client.post(
+                answer_url,
+                data={
+                    "submission_id": submission_id,
+                    "audio": (io.BytesIO(b"duplicate body"), "answer.webm", "audio/webm"),
+                },
+                headers=self.student_headers,
+            )
+            self.assertEqual(duplicate.status_code, 200, duplicate.json)
+            self.assertTrue(duplicate.json["idempotent_replay"])
+            self.assertEqual(len(puts), 1)
+            self.assertEqual(next(iter(stored.values())), b"first recording")
+
+            conflict = self.client.post(
+                answer_url,
+                data={
+                    "submission_id": "ca640215-4212-4540-9eeb-e48b1e7c4470",
+                    "audio": (io.BytesIO(b"replacement"), "answer.webm", "audio/webm"),
+                },
+                headers=self.student_headers,
+            )
+            self.assertEqual(conflict.status_code, 409)
+            self.assertEqual(len(puts), 1)
+
+        self.assertIn(f"questions/{self.first.interview_question_id}/answers/{submission_id}", self.first.answer_audio_path)
+        self.assertEqual(self.first.processing_job.audio_path, self.first.answer_audio_path)
 
     def test_audio_summary_uses_saved_usable_recordings_and_skips_invalid_values(self):
         questions = [
@@ -328,7 +430,10 @@ class InterviewFlowTests(unittest.TestCase):
                 "Correctness": {"applicable": True, "explanation": "Defined SQL accurately.", "evidence": "SQL manages data"},
                 "Structure": {"applicable": True, "explanation": "No sequence was stated.", "evidence": "invented quote"},
             },
+            "technical_accuracy": "Partially accurate.", "missing_concepts": [],
+            "correct_explanation": "A useful answer explains the concept clearly.",
             "strengths": [], "weaknesses": [], "feedback": "Keep practising.",
+            "needs_teacher_review": False,
         }
         with patch("queme.services.llm._configured", return_value=True), patch(
             "queme.services.llm._generate", return_value=json.dumps(response)
@@ -341,14 +446,35 @@ class InterviewFlowTests(unittest.TestCase):
         self.assertEqual(evaluated["criteria_weights"], {"Correctness": 80.0, "Structure": 20.0})
         self.assertEqual(evaluated["criterion_details"]["Correctness"]["evidence"], "SQL manages data")
         self.assertIsNone(evaluated["criterion_details"]["Structure"]["evidence"])
+        self.assertTrue(evaluated["needs_teacher_review"])
+
+    def test_improvement_plan_deduplicates_repeated_criterion_areas(self):
+        self.first.transcript = "I used a list."
+        self.first.evaluation_json = {
+            "criteria_scores": {"Correctness": 5},
+            "criterion_details": {"Correctness": {"applicable": True, "explanation": "Add precision.", "evidence": "I used a list."}},
+        }
+        self.second.transcript = "A list stores items."
+        self.second.evaluation_json = {
+            "criteria_scores": {" correctness ": 3},
+            "criterion_details": {" correctness ": {"applicable": True, "explanation": "Explain behavior.", "evidence": "A list stores items."}},
+        }
+        plan = build_improvement_plan([self.first, self.second], [], {})
+        repeated = [item for item in plan if item["area"].strip().casefold() == "correctness"]
+        self.assertEqual(len(repeated), 1)
+        self.assertEqual(repeated[0]["score"], 3)
 
     def test_empty_analysis_coverage_is_unavailable_not_zero_percent(self):
         coverage = build_analysis_coverage([])
         self.assertEqual(coverage["status"], "INSUFFICIENT_DATA")
         self.assertIsNone(coverage["coverage"]["overall"]["percentage"])
 
-    def test_recording_to_completed_report_and_pdf(self):
+    def test_queued_answers_finalize_report_only_after_worker_processing(self):
+        from queme.services.answer_jobs import run_worker
+
         self.start_interview()
+        interview_id = self.interview.interview_id
+        audio_objects = {}
         recording_metrics = iter((
             {"audio_usable": True, "audio_quality_status": "OK", "delivery_score": 7.0,
              "words_per_minute": 120, "pause_count": 2, "filler_word_count": 1,
@@ -357,23 +483,20 @@ class InterviewFlowTests(unittest.TestCase):
              "words_per_minute": 90, "pause_count": 4, "filler_word_count": 3,
              "analysis_json": {"word_timestamps": []}},
         ))
-        storage = type("StorageStub", (), {"put": lambda _self, key, _data, content_type=None: key})()
 
-        def score_answer(question):
-            question.transcript = question.analysis.transcript
-            question.content_score = 8.0
-            question.delivery_score = float(question.analysis.delivery_score)
-            question.final_ai_score = round(0.7 * question.content_score + 0.3 * question.delivery_score, 2)
-            question.needs_review = False
-            question.evaluation_json = {"needs_teacher_review": False}
+        class StorageStub:
+            def put(self, key, data, content_type=None):
+                audio_objects[key] = data
+                return key
 
-        with (
-            patch("queme.blueprints.session.transcribe", return_value={"transcript": "A clear answer.", "words": [], "status": "OK"}),
-            patch("queme.blueprints.session.analyze_audio", side_effect=lambda *_args, **_kwargs: next(recording_metrics)),
-            patch("queme.blueprints.session.evaluate_interview_answer", side_effect=score_answer),
-            patch("queme.blueprints.session.generate_followup", return_value=None),
-            patch("queme.blueprints.session.get_storage", return_value=storage),
-        ):
+            def get(self, key):
+                return audio_objects[key]
+
+            def delete(self, key):
+                audio_objects.pop(key, None)
+
+        storage = StorageStub()
+        with patch("queme.blueprints.session.get_storage", return_value=storage):
             first_response = self.client.post(
                 f"/api/interviews/{self.interview.interview_id}/questions/{self.first.interview_question_id}/answer",
                 data={"audio": (io.BytesIO(b"first audio"), "first.webm", "audio/webm")},
@@ -387,23 +510,55 @@ class InterviewFlowTests(unittest.TestCase):
             )
 
         self.assertEqual(second_response.status_code, 200, second_response.json)
-        self.assertEqual(second_response.json["action"], "complete")
+        self.assertEqual(second_response.json["action"], "processing")
+        self.assertEqual(db.session.get(Interview, interview_id).status, "PROCESSING")
+        self.assertEqual(
+            self.client.get(f"/api/interviews/{interview_id}/report", headers=self.student_headers).status_code,
+            409,
+        )
+
+        def score_answer(question, *, correlation_id=None):
+            self.assertEqual(correlation_id, f"answer_job:{question.processing_job.job_id}")
+            question.content_score = 8.0
+            question.delivery_score = float(question.analysis.delivery_score)
+            question.final_ai_score = round(0.7 * question.content_score + 0.3 * question.delivery_score, 2)
+            question.needs_review = False
+            question.evaluation_json = {"needs_teacher_review": False}
+            return question.evaluation_json
+
+        self.app.instance_path = self.storage_dir.name
+        with (
+            patch("queme.services.answer_jobs.get_storage", return_value=storage),
+            patch("queme.services.answer_jobs.transcribe", return_value={"transcript": "A clear answer.", "words": [], "status": "OK"}),
+            patch("queme.services.answer_jobs.analyze_audio", side_effect=lambda *_args, **_kwargs: next(recording_metrics)),
+            patch("queme.services.answer_jobs.evaluate_interview_answer", side_effect=score_answer),
+        ):
+            run_worker(once=True)
+            self.assertEqual(db.session.get(Interview, interview_id).status, "PROCESSING")
+            run_worker(once=True)
+
+        self.assertEqual(db.session.get(Interview, interview_id).status, "COMPLETED")
         report_response = self.client.get(
-            f"/api/interviews/{self.interview.interview_id}/report",
+            f"/api/interviews/{interview_id}/report",
             headers=self.student_headers,
         )
         self.assertEqual(report_response.status_code, 200, report_response.json)
-        audio_summary = report_response.json["audio_summary"]
+        report = report_response.json
+        self.assertEqual(report["answer_processing"]["successfully_evaluated"], 2)
+        self.assertEqual(report["answer_processing"]["pending"], 0)
+        self.assertEqual(report["answer_processing"]["retryable_failures"], 0)
+        self.assertEqual(report["answer_processing"]["teacher_review"], 0)
+        audio_summary = report["audio_summary"]
         self.assertEqual(audio_summary["questions_included"], 2)
         self.assertEqual(audio_summary["words_per_minute"], 105.0)
         self.assertEqual(audio_summary["pause_count"], 3.0)
         self.assertEqual(audio_summary["filler_word_count"], 2.0)
         self.assertEqual(audio_summary["delivery_score"], 8.0)
-        self.assertEqual(audio_summary, report_response.json["audio_summary"])
-        self.assertEqual(report_response.json["analysis_coverage"]["coverage"]["overall"]["percentage"], 100.0)
-        self.assertEqual([row["final_ai_score"] for row in report_response.json["questions"]], [7.7, 8.3])
+        self.assertEqual(report["analysis_coverage"]["coverage"]["overall"]["percentage"], 100.0)
+        self.assertEqual([row["final_ai_score"] for row in report["questions"]], [7.7, 8.3])
+        self.assertTrue(all(row["processing_status"] == "SUCCESSFULLY_EVALUATED" for row in report["questions"]))
         pdf_response = self.client.get(
-            f"/api/interviews/{self.interview.interview_id}/report.pdf",
+            f"/api/interviews/{interview_id}/report.pdf",
             headers=self.student_headers,
         )
         self.assertEqual(pdf_response.status_code, 200)

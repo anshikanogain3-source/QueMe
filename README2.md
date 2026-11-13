@@ -21,7 +21,7 @@ The system has three roles:
 - **Database:** Local SQLite file by default (`backend/queme.db` in the active local setup); PostgreSQL remains supported when explicitly configured. The interview flow tests use in-memory SQLite.
 - **Authentication:** Bearer tokens, with password hashing and role checks in the backend.
 - **Audio:** Browser `MediaRecorder` for capture and browser speech synthesis for spoken questions. Backend transcription uses `faster-whisper`; audio measurements are calculated by the audio-analysis service.
-- **AI:** Local Ollama chat inference with Qwen 3.5 4B for question drafting, answer evaluation, and follow-up generation. Interview intelligence is not sent to a cloud LLM.
+- **AI:** Local Ollama chat inference with Qwen 3 1.7B for question drafting, answer evaluation, and follow-up generation. Interview intelligence is not sent to a cloud LLM.
 - **Audio storage:** The active local configuration targets AWS S3; local filesystem and Cloudflare R2 adapters remain available. Audio object keys are saved with interview answers in the configured database so reports can retrieve the recording through the authenticated backend.
 - **Optional services:** SMTP password reset emails.
 
@@ -116,12 +116,12 @@ Password reset uses a short-lived token delivered by SMTP when mail configuratio
 2. Before a scheduled interview starts, the student explicitly consents to audio recording. The browser checks microphone permission, then the API records consent and starts the interview.
 3. The student starts the interview, listens to the spoken question if speech synthesis is supported, and records an answer with `MediaRecorder`.
 4. The student can listen back, re-record, submit, skip the question, or finish the interview. The UI prevents duplicate starts/submissions while those operations are pending.
-5. On submission, the backend validates the current question and audio file, stores the audio, transcribes it, and calculates available audio/communication metrics.
-6. Poor-quality recordings can be returned for retry. For usable answers, automated rubric scoring and a follow-up question are attempted when the LLM provider is configured and usable transcription exists. The interview may still proceed when optional analysis is unavailable; the report can be flagged for teacher review.
-7. The session response determines whether the student sees the next question, a retry message, or the completion screen. Skipped/unanswered questions are marked for review.
-8. When the interview completes, the backend creates/refreshes its report. The student and authorized teacher/admin can read it; teachers/admins can add review feedback and score overrides.
+5. On submission, the backend validates ownership and the assigned current question, stores the recording under an immutable key, and commits a durable processing job. The student proceeds without waiting for transcription, audio analysis, or Ollama evaluation.
+6. One local worker processes answer jobs sequentially. It stores transcription and audio analysis before evaluation, retries transient failures, and marks exhausted/unusable work for teacher review. Skipped and unanswered questions are also marked for review.
+7. After the last question, the interview remains in `PROCESSING`. The report is finalized only after all accepted answer jobs are either evaluated or terminally marked for teacher review. Missing evaluations remain unavailable; they are never treated as zero.
+8. The student and authorized teacher/admin can read the finalized report; teachers/admins can add review feedback and score overrides.
 
-The answer endpoint performs transcription and analysis during the request, so the interface may remain in its processing state until that work and report update finish.
+The answer endpoint waits only for recording storage and the database commit. The final processing screen waits for the persistent worker to finish or exhaust retries for every accepted answer.
 
 ### Report and review
 
@@ -155,7 +155,7 @@ All routes are under `/api`. The complete endpoint details and payload notes are
 
 | Group | Main routes and purpose |
 | --- | --- |
-| Health | `GET /health` checks API/database availability. |
+| Health | `GET /api/health` checks API/database availability and reports answer-worker health. |
 | Authentication | `/auth/register`, `/auth/login`, `/auth/me`, `/auth/forgot-password`, `/auth/reset-password`. |
 | Admin | `/admin/users`, `/admin/pending-users`, user status, courses/class groups, settings, analytics, and exports. |
 | Teacher authoring | `/questions`, `/rubrics`, `/templates`; question drafting/commit; teacher analytics and student lookup. |
@@ -231,44 +231,88 @@ QueMe/
 
 Generated directories such as `frontend/node_modules`, `frontend/dist`, Python virtual environments, caches, and uploaded recordings are runtime/build artifacts rather than application source. The tree above lists source files relevant to the implemented application.
 
-## 9. Run locally
+## 9. Development Setup & Running Commands
 
-Configure the backend environment from `backend/.env.example` and install/start Ollama separately. On Ubuntu 22.04:
+The full copy-paste setup, health checks, shutdown instructions, logs, and troubleshooting guide is in [README.md — Development Setup & Running Commands](README.md#development-setup--running-commands). This section is the quick reference.
+
+### Initial setup
+
+From the repository root, create the root environment file from the checked-in template if one does not already exist, then replace the sample secret:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen3.5:4b
-ollama serve
+cd ~/Documents/QueMe
+cp -n backend/.env.example .env
+python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
 ```
 
-The Ollama server listens on `http://localhost:11434` by default. Keep it running while the Flask backend is in use. The backend calls its local `/api/chat` endpoint; no Python Ollama SDK or cloud LLM SDK is required. The remaining application setup is:
+The default database is SQLite at `backend/queme.db`; PostgreSQL is optional through `DATABASE_URL`. Set `SECRET_KEY`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in `.env`. The app loads root `.env` first and `backend/.env` only for values not already set.
 
-1. Create `backend/.env` from `backend/.env.example` if one does not already exist (`cp -n backend/.env.example backend/.env`), then set a strong secret. SQLite is the default and writes to a local file; no cloud database is needed.
-2. From `backend/`, install `requirements.txt`, run database migrations, seed initial data, and start Flask (normally port `5000`).
-3. From `frontend/`, run `npm install` and `npm run dev` (normally port `5173`). Vite proxies `/api` requests to Flask.
-4. Register a student/teacher, activate the account through the seeded admin, prepare and assign an interview as a teacher, then complete it as a student.
-
-Example backend and frontend commands (activate the backend virtual environment before starting Flask):
+Install backend requirements and initialize the database once:
 
 ```bash
-cd backend
+cd ~/Documents/QueMe/backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-flask db upgrade
-flask seed
-flask run
+python3 -m pip install -r requirements.txt
+flask --app run.py db upgrade
+flask --app run.py seed
 ```
 
-The active local environment is configured for the `queme-audio` bucket in `ap-southeast-2` (Asia Pacific, Sydney). Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` before uploading recordings. For S3-compatible services, set `S3_ENDPOINT_URL`. The requested label `QueMe Audio` is represented as lowercase `queme-audio`; AWS bucket names cannot contain spaces or uppercase letters, and the global name must be available. See [AWS S3 bucket naming rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html).
-
-In a second terminal:
+Install Ollama separately, then pull the configured default model. Ollama listens on port `11434` by default; QueMe defaults to `OLLAMA_MODEL=qwen3:1.7b`:
 
 ```bash
-cd frontend
+ollama pull qwen3:1.7b
+ollama list
+```
+
+Install frontend packages once:
+
+```bash
+cd ~/Documents/QueMe/frontend
 npm install
+```
+
+### Daily startup
+
+**Terminal 1 — Backend API and answer worker:**
+
+```bash
+cd ~/Documents/QueMe/backend
+./dev.sh
+```
+
+The launcher starts the Flask API and answer worker as separate processes. The API normally uses port `5000`.
+
+**Terminal 2 — Frontend:**
+
+```bash
+cd ~/Documents/QueMe/frontend
 npm run dev
 ```
+
+Vite normally uses port `5173` and proxies `/api` to the backend.
+
+### Manual worker and verification
+
+When the API is started independently, run the worker in another backend terminal:
+
+```bash
+cd ~/Documents/QueMe/backend
+source .venv/bin/activate
+flask --app run.py process-answer-jobs
+```
+
+Use `flask --app run.py process-answer-jobs --once` to process at most one available job and exit. Do not start a second worker alongside the launcher.
+
+Check the API and worker status at `http://127.0.0.1:5000/api/health` or with:
+
+```bash
+curl -fsS http://127.0.0.1:5000/api/health
+```
+
+Press Ctrl+C in each terminal to stop its process. The backend launcher stops both its API and worker; the frontend and any manually started Ollama server stop in their own terminals.
+
+The active local environment is configured for the `queme-audio` bucket in `ap-southeast-2` (Asia Pacific, Sydney). Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` before uploading recordings. For S3-compatible services, set `S3_ENDPOINT_URL`. The requested label `QueMe Audio` is represented as lowercase `queme-audio`; AWS bucket names cannot contain spaces or uppercase letters, and the global name must be available. See [AWS S3 bucket naming rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html).
 
 Microphone access requires a supported browser and a secure context (localhost is accepted by browsers). Speech playback depends on browser speech-synthesis support. Local AI features require Ollama and the configured model; transcription, email, S3, and R2 behavior depends on runtime configuration and service availability.
 
@@ -279,7 +323,7 @@ Microphone access requires a supported browser and a secure context (localhost i
 - Automated question drafting, answer evaluation, and follow-up generation use only the configured local Ollama server. If it is unavailable, the interview can still complete and the report flags the answer for teacher review. No external LLM provider is used as a fallback.
 - Interview reports aggregate saved per-question results; the current application does not make an additional LLM call for an interview-level narrative summary. Adaptive difficulty is not currently part of the interview-session flow.
 - Transcription and audio analysis depend on the configured `faster-whisper` model/runtime. A missing or unusable transcript can result in teacher-review status.
-- The backend processes answer transcription and evaluation in the submit request; there is no separate asynchronous job queue/polling service in the current structure.
+- Answer transcription, audio analysis, and evaluation run through a persistent single-worker queue after the recording and job are committed. The API exposes processing status through the authenticated interview session.
 - Camera support is an optional local preview, not a recorded video interview feature.
 - `frontend/src/App.jsx` currently contains several page components and the interview-room flow; `TeacherDashboard.jsx` is separated as a dedicated dashboard module. The current project has no standalone `useAudioRecorder` hook.
 - This report documents source behavior and configuration. It does not claim that external services, secrets, database contents, or a deployment environment are currently available.

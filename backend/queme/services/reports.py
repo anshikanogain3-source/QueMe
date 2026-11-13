@@ -25,7 +25,7 @@ AI_DECISION_SUPPORT_DISCLAIMER = (
 )
 
 
-def evaluate_interview_answer(question):
+def evaluate_interview_answer(question, *, correlation_id=None):
     """Score one usable answer, retaining an explicit review state on fallback."""
     analysis = question.analysis
     transcript = (analysis.transcript if analysis else "") or ""
@@ -42,7 +42,7 @@ def evaluate_interview_answer(question):
         "needs_teacher_review": needs_review,
     }
     if transcript:
-        evaluation = evaluate_answer({
+        evaluation_payload = {
             "question": question.question.question_text if question.question else (question.followup_text or ""),
             "question_type": question.question.question_type if question.question else "",
             "expected_key_points": question.question.expected_key_points if question.question else "",
@@ -62,7 +62,14 @@ def evaluate_interview_answer(question):
                 "maximum_score": rubric.maximum_score if rubric else 10,
                 "criteria": criteria,
             },
-        })
+        }
+        if correlation_id:
+            evaluation = evaluate_answer(
+                evaluation_payload,
+                correlation_id=correlation_id,
+            )
+        else:
+            evaluation = evaluate_answer(evaluation_payload)
         needs_review = needs_review or bool(evaluation.get("needs_teacher_review"))
     rubric_snapshot = {
         "rubric_id": rubric.rubric_id if rubric else None,
@@ -120,10 +127,12 @@ def generate_interview_report(interview):
         report.score_source = "AI_AUDIO"
     else:
         report.score_source = "NEEDS_REVIEW"
-    if any(q.needs_review for q in questions) or report.final_score is None:
+    if report.reviewed_at:
+        report.report_status = "REVIEWED"
+    elif any(q.needs_review for q in questions) or report.final_score is None:
         report.report_status = "NEEDS_REVIEW"
     else:
-        report.report_status = "REVIEWED" if report.reviewed_at else "READY"
+        report.report_status = "READY"
     if report.generated_at is None:
         report.generated_at = datetime.utcnow()
     interview.final_score = report.final_score
@@ -260,6 +269,23 @@ def question_analysis_status(question):
     return {"status": "COMPLETE", "reason": None}
 
 
+def answer_processing_status(question):
+    job = question.processing_job
+    if job is None:
+        if question.answer_audio_path:
+            return "PENDING"
+        return "TEACHER_REVIEW" if question.needs_review else "NOT_APPLICABLE"
+    if job.status in ("QUEUED", "PROCESSING"):
+        return "PENDING"
+    if job.status == "RETRY_WAIT":
+        return "RETRYABLE_FAILURE"
+    if job.status == "NEEDS_REVIEW" or job.outcome == "TEACHER_REVIEW":
+        return "TEACHER_REVIEW"
+    if job.status == "COMPLETED" and job.outcome == "EVALUATED":
+        return "SUCCESSFULLY_EVALUATED"
+    return "TEACHER_REVIEW"
+
+
 def _valid_score(value):
     if isinstance(value, bool):
         return None
@@ -379,7 +405,17 @@ def build_improvement_plan(questions, topic_analysis, audio_summary):
             "review_timeframe": "At your next short practice session.",
         })
     candidates.sort(key=lambda item: (item["priority"], item["score"] if item["score"] is not None else 0))
-    return candidates[:3]
+    deduplicated = []
+    seen_areas = set()
+    for candidate in candidates:
+        normalized_area = " ".join(str(candidate.get("area") or "").casefold().split())
+        if normalized_area in seen_areas:
+            continue
+        seen_areas.add(normalized_area)
+        deduplicated.append(candidate)
+        if len(deduplicated) == 3:
+            break
+    return deduplicated
 
 
 def build_report_analytics(questions):
@@ -450,6 +486,15 @@ def build_pdf(interview, questions, report):
         Paragraph(f"Overall score: {report.final_score if report else interview.final_score}", styles["Normal"]),
         Paragraph(f"Score source: {escape(report.score_source if report and report.score_source else 'AI + Audio Analysis')}", styles["Normal"]),
         Paragraph(f"Report status: {escape(report.report_status if report and report.report_status else 'NEEDS_REVIEW')}", styles["Normal"]),
+        Paragraph(
+            "Answer processing: "
+            f"{sum(answer_processing_status(q) == 'SUCCESSFULLY_EVALUATED' for q in questions)} successfully evaluated · "
+            f"{sum(answer_processing_status(q) == 'PENDING' for q in questions)} pending · "
+            f"{sum(answer_processing_status(q) == 'RETRYABLE_FAILURE' for q in questions)} retryable failures · "
+            f"{sum(answer_processing_status(q) == 'TEACHER_REVIEW' for q in questions)} require teacher review. "
+            "Missing evaluations are not assigned a zero score.",
+            styles["Normal"],
+        ),
         Paragraph(
             f"Score method: question final AI score = content × {content_weight * 100:.0f}% + "
             f"delivery × {delivery_weight * 100:.0f}%; both component scores use a 0–10 scale.",
@@ -528,6 +573,7 @@ def build_pdf(interview, questions, report):
         question_text = q.question.question_text if q.question else (q.followup_text or "")
         story.append(Paragraph(f"{label}: {escape(question_text)}", styles["Heading3"]))
         story.append(Paragraph(f"Transcript: {escape(q.transcript or '—')}", styles["Normal"]))
+        story.append(Paragraph(f"Processing status: {answer_processing_status(q).replace('_', ' ').lower()}", styles["Normal"]))
         story.append(
             Paragraph(
                 f"Content {q.content_score}/10 · Delivery {q.delivery_score}/10 · Final AI {q.final_ai_score}/10 · "

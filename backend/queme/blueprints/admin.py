@@ -343,7 +343,10 @@ def save_settings():
 def analytics():
     interview_count = Interview.query.count()
     completed = Interview.query.filter_by(status="COMPLETED").count()
-    avg = db.session.query(func.avg(Interview.final_score)).filter(Interview.final_score.isnot(None)).scalar()
+    avg = db.session.query(func.avg(Interview.final_score)).filter(
+        Interview.status == "COMPLETED",
+        Interview.final_score.isnot(None),
+    ).scalar()
     pending = User.query.filter_by(account_status="PENDING").count()
     students = User.query.filter_by(role="student", account_status="ACTIVE").count()
     teachers = User.query.filter_by(role="teacher", account_status="ACTIVE").count()

@@ -413,6 +413,7 @@ a { color: inherit; }
 .report-audio-panel .stored-audio { width: 100%; max-width: 100%; }
 .report-material-unavailable { margin: 0; color: #98a49d; font-size: 10px; }
 .report-v2 .report-review-fields { grid-template-columns: minmax(150px, .35fr) minmax(0, 1fr); }
+.report-v2 .report-question-save { grid-column: 1 / -1; justify-self: start; }
 .report-v2 .report-review-fields textarea, .report-review-summary textarea { width: 100%; border: 1px solid #dfe6e0; border-radius: 8px; outline: 0; background: #fff; padding: 11px 13px; color: #232e3b; font: 500 12px/1.5 "DM Sans", sans-serif; resize: vertical; }
 .report-v2 .report-review-fields textarea:focus, .report-review-summary textarea:focus { border-color: #4e6a8a; box-shadow: 0 0 0 3px rgb(78 106 138 / 12%); }
 .report-v2 .report-review-summary { margin-top: 14px; }
@@ -1423,6 +1424,8 @@ h1, h2, h3, h4, .brand-word { font-family: "Manrope", "Inter", sans-serif; color
 .interviewer-portrait-wrap { min-height: 185px; border-radius: 11px; background: linear-gradient(145deg, #142b4d, #1e40af); }
 .interviewer-portrait-wrap::before, .interviewer-portrait-wrap::after, .interviewer-halo, .interviewer-spark { display: none; }
 .ai-interviewer-portrait { display: flex; width: 100%; max-height: none; min-height: 185px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; filter: none; color: #dbeafe; }
+.ai-interviewer-portrait { position: relative; overflow: hidden; }
+.interviewer-particle-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .interviewer-brand-orbit { display: grid; width: 74px; height: 74px; place-items: center; border: 1px solid rgb(219 234 254 / 30%); border-radius: 50%; background: rgb(255 255 255 / 9%); }
 .interviewer-brand-orbit .brand-mark-svg { width: 42px; height: 42px; }
 .interviewer-audio-icon { color: #bfdbfe; }
@@ -1543,6 +1546,84 @@ h1, h2, h3, h4, .brand-word { font-family: "Manrope", "Inter", sans-serif; color
 .admin-sidebar-note p { z-index: 1; margin: 0; color: #e2e8f0; font: 600 12px/1.5 "Manrope", sans-serif; }
 .admin-sidebar-shield { position: absolute; top: 13px; left: 14px; color: #93c5fd; }
 .admin-note-line { position: absolute; right: -25px; bottom: -45px; width: 145px; height: 90px; border: 1px solid rgb(147 197 253 / 22%); border-radius: 50%; transform: rotate(-20deg); }
+
+/* Interview room: camera-led 60/40 workspace and readable live transcript. */
+.interview-room-grid {
+  grid-template-columns: minmax(0, 1.5fr) minmax(360px, 1fr);
+  grid-template-rows: minmax(250px, 34vh) minmax(410px, auto);
+  grid-template-areas: "camera interviewer" "camera conversation";
+  align-items: stretch;
+}
+.student-camera-card { min-height: 0; justify-content: center; padding: 22px; }
+.student-camera-frame { width: 100%; max-height: none; min-height: 260px; aspect-ratio: 4 / 3; }
+.student-camera-frame video { object-fit: cover; transform: scaleX(-1); }
+.interviewer-card { min-height: 0; }
+.interviewer-portrait-wrap { min-height: 110px; margin-top: 10px; }
+.ai-interviewer-portrait { min-height: 110px; }
+.interview-conversation {
+  min-height: 410px;
+  max-height: none;
+  overflow: visible;
+  padding: 20px;
+}
+.interview-processing-panel { display: flex; min-height: 310px; flex-direction: column; align-items: flex-start; justify-content: center; }
+.interview-processing-panel .step-label { margin-top: 18px; }
+.interview-processing-panel > p { max-width: 560px; }
+.interview-processing-spinner { width: 34px; height: 34px; border: 3px solid #dbeafe; border-top-color: #2563eb; border-radius: 50%; animation: interview-processing-spin .9s linear infinite; }
+.interview-processing-counts { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
+.interview-processing-counts span { border: 1px solid #dbe5f2; border-radius: 999px; background: #f8fafc; padding: 7px 11px; color: #526174; font-size: 11px; }
+.interview-processing-counts strong { color: #1e40af; }
+@keyframes interview-processing-spin { to { transform: rotate(360deg); } }
+.conversation-header { padding-bottom: 12px; }
+.conversation-header h1 { font-size: 17px; }
+.conversation-progress { margin-top: 11px; }
+.interview-conversation .question-panel,
+.interview-conversation .consent-panel,
+.interview-conversation .completion-panel,
+.interview-intro-card { max-width: none; margin: 0; padding: 16px 0 10px; }
+.interview-conversation .question-panel { margin-top: auto; margin-bottom: auto; }
+.interview-conversation .question-type-row { margin-top: 12px; }
+.interview-conversation .question-text { margin-top: 12px; font-size: clamp(17px, 1.55vw, 22px); }
+.speech-controls { flex-wrap: wrap; gap: 8px 12px; margin-top: 10px; }
+.recording-instruction { margin: 12px 0 -10px; }
+.interview-conversation .recording-box { margin-top: 18px; padding: 13px; }
+.interview-conversation .recording-box > .button { width: auto; }
+.clip-copy { min-width: 0; flex: 1 1 180px; }
+.clip-copy audio { display: block; width: 100%; max-width: 290px; height: 34px; margin-top: 8px; }
+.question-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.interviewer-card.visualizer-greeting .interviewer-brand-orbit,
+.interviewer-card.visualizer-speaking .interviewer-brand-orbit { animation: orb-breathe 1.8s ease-in-out infinite; }
+.interviewer-card.visualizer-listening .interviewer-brand-orbit { border-color: #fca5a5; background: rgb(254 226 226 / 18%); box-shadow: 0 0 0 9px rgb(248 113 113 / 12%); }
+.interviewer-card.visualizer-processing .interviewer-brand-orbit { animation: orb-process 1.2s linear infinite; }
+.interviewer-card.visualizer-error .interviewer-brand-orbit { border-color: #fca5a5; background: rgb(254 226 226 / 18%); }
+.interviewer-card.visualizer-paused .interviewer-brand-orbit { opacity: .58; }
+@keyframes orb-breathe { 50% { box-shadow: 0 0 0 10px rgb(147 197 253 / 14%); transform: scale(1.04); } }
+@keyframes orb-process { to { transform: rotate(360deg); } }
+@media (max-width: 1000px) {
+  .interview-room-grid { grid-template-columns: minmax(0, 1fr) minmax(300px, .9fr); grid-template-rows: minmax(220px, auto) minmax(430px, auto); }
+  .interview-conversation { max-height: none; }
+  .student-camera-frame { min-height: 220px; }
+}
+@media (max-width: 700px) {
+  .interview-room-grid { display: flex; flex-direction: column; gap: 10px; }
+  .student-camera-card { order: 0; padding: 14px; }
+  .student-camera-frame { width: 100%; min-height: 190px; max-height: 360px; aspect-ratio: 16 / 10; }
+  .interviewer-card { order: 1; display: flex; padding: 13px; }
+  .interviewer-card-copy { display: flex; }
+  .interviewer-portrait-wrap, .ai-interviewer-portrait { min-height: 120px; }
+  .interview-conversation { order: 2; min-height: 0; max-height: none; padding: 17px 15px; }
+  .interview-conversation .question-text { font-size: 21px; }
+  .interview-conversation .recording-box { align-items: flex-start; flex-wrap: wrap; }
+  .interview-conversation .recording-box > .button { width: 100%; }
+  .question-actions { justify-content: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .interview-processing-spinner { animation: none; }
+  .interviewer-particle-canvas { visibility: visible; }
+  .interviewer-card.visualizer-greeting .interviewer-brand-orbit,
+  .interviewer-card.visualizer-speaking .interviewer-brand-orbit,
+  .interviewer-card.visualizer-processing .interviewer-brand-orbit { animation: none; }
+}
 .admin-main { width: min(1600px, 100%); margin: 0 auto; padding: 28px clamp(20px, 3vw, 46px) 44px; }
 .admin-topbar { min-width: 0; gap: 22px; padding: 0 clamp(20px, 3vw, 46px); }
 .admin-topbar-left, .admin-topbar-right { display: flex; min-width: 0; align-items: center; gap: 14px; }

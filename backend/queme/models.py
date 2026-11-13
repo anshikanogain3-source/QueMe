@@ -224,6 +224,7 @@ class InterviewQuestion(db.Model):
     rubric = db.relationship("Rubric")
     interview = db.relationship("Interview", back_populates="questions")
     analysis = db.relationship("AudioAnalysis", uselist=False)
+    processing_job = db.relationship("AnswerProcessingJob", uselist=False, back_populates="question")
     reviews = db.relationship("QuestionReview", back_populates="interview_question", order_by="QuestionReview.reviewed_at")
 
     def to_dict(self):
@@ -312,10 +313,53 @@ class AudioAnalysis(db.Model):
         }
 
 
+class AnswerProcessingJob(db.Model):
+    __tablename__ = "answer_processing_jobs"
+    __table_args__ = (
+        db.UniqueConstraint("interview_question_id", name="uq_answer_job_question"),
+        db.Index("ix_answer_job_status_available", "status", "available_at"),
+    )
+
+    job_id = db.Column(db.Integer, primary_key=True)
+    interview_question_id = db.Column(
+        db.Integer,
+        db.ForeignKey("interview_questions.interview_question_id"),
+        nullable=False,
+    )
+    submission_id = db.Column(db.String(64), nullable=False, unique=True)
+    audio_path = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(24), nullable=False, default="QUEUED")
+    stage = db.Column(db.String(24), nullable=False, default="TRANSCRIPTION")
+    outcome = db.Column(db.String(24))
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    available_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    locked_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    finished_at = db.Column(db.DateTime)
+    last_error_code = db.Column(db.String(60))
+    last_error_message = db.Column(db.String(300))
+
+    question = db.relationship("InterviewQuestion", back_populates="processing_job")
+
+    def to_status_dict(self):
+        return {
+            "job_id": self.job_id,
+            "interview_question_id": self.interview_question_id,
+            "status": self.status,
+            "stage": self.stage,
+            "outcome": self.outcome,
+            "attempt_count": self.attempt_count,
+            "available_at": self.available_at.isoformat() if self.available_at else None,
+            "last_error_code": self.last_error_code,
+            "last_error_message": self.last_error_message,
+        }
+
+
 class Report(db.Model):
     __tablename__ = "reports"
     report_id = db.Column(db.Integer, primary_key=True)
-    interview_id = db.Column(db.Integer, db.ForeignKey("interviews.interview_id"))
+    interview_id = db.Column(db.Integer, db.ForeignKey("interviews.interview_id"), unique=True)
     ai_final_score = db.Column(db.Numeric(4, 2))
     teacher_score = db.Column(db.Numeric(4, 2))
     final_score = db.Column(db.Numeric(4, 2))

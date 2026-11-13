@@ -88,13 +88,16 @@ def create_app(config_object=None):
 
     @app.get("/api/health")
     def health():
+        from .services.answer_jobs import worker_health
+
+        worker = worker_health()
         try:
             db.session.execute(text("SELECT 1"))
         except SQLAlchemyError:
             db.session.rollback()
             app.logger.exception("Database health check failed")
-            return jsonify({"status": "unavailable", "database": "unavailable"}), 503
-        return jsonify({"status": "ok", "database": "ok"})
+            return jsonify({"status": "unavailable", "database": "unavailable", "worker": worker}), 503
+        return jsonify({"status": "ok", "database": "ok", "worker": worker})
 
     register_cli_commands(app)
     return app
@@ -185,3 +188,15 @@ def register_cli_commands(app):
             raise click.ClickException(f"Initial data could not be seeded: {exc}") from exc
 
         click.echo("Initial data is ready (admin, courses, default rubrics, and score weights).")
+
+    @app.cli.command("process-answer-jobs")
+    @click.option("--once", is_flag=True, help="Process one available job and exit.")
+    @click.option("--poll-seconds", type=click.FloatRange(min=0.1), default=1.0, show_default=True)
+    def process_answer_jobs(once, poll_seconds):
+        """Run the single local worker for queued interview answers."""
+        from .services.answer_jobs import run_worker
+
+        try:
+            run_worker(once=once, poll_seconds=poll_seconds)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc

@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 
@@ -19,6 +20,16 @@ def _positive_int_env(name, default):
     return value
 
 
+def _score_threshold_env(name, default):
+    try:
+        value = float(os.getenv(name, default))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number from 0 to 10.") from exc
+    if not math.isfinite(value) or not 0 <= value <= 10:
+        raise RuntimeError(f"{name} must be a number from 0 to 10.")
+    return value
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "")
     SQLALCHEMY_DATABASE_URI = os.getenv(
@@ -35,11 +46,23 @@ class Config:
     LOG_BACKUP_COUNT = _positive_int_env("LOG_BACKUP_COUNT", "5")
 
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b").strip()
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b").strip()
     OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip()
     OLLAMA_TIMEOUT = _positive_int_env("OLLAMA_TIMEOUT", "300")
+    OLLAMA_LOCK_WAIT_TIMEOUT = _positive_int_env("OLLAMA_LOCK_WAIT_TIMEOUT", "30")
     OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
     OLLAMA_NUM_CTX = _positive_int_env("OLLAMA_NUM_CTX", "4096")
+    OLLAMA_EVALUATION_BUDGET_SECONDS = _positive_int_env(
+        "OLLAMA_EVALUATION_BUDGET_SECONDS", "600"
+    )
+    OLLAMA_EVALUATION_MIN_TOKENS = _positive_int_env(
+        "OLLAMA_EVALUATION_MIN_TOKENS", "700"
+    )
+    OLLAMA_EVALUATION_MAX_TOKENS = _positive_int_env(
+        "OLLAMA_EVALUATION_MAX_TOKENS", "1800"
+    )
+    ADAPTIVE_STRONG_THRESHOLD = _score_threshold_env("ADAPTIVE_STRONG_THRESHOLD", "8")
+    ADAPTIVE_WEAK_THRESHOLD = _score_threshold_env("ADAPTIVE_WEAK_THRESHOLD", "5")
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
     STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local").lower()
     STORAGE_LOCAL_DIR = Path(os.getenv("STORAGE_LOCAL_DIR", "uploads"))
@@ -94,6 +117,41 @@ def validate_config(app):
 
     if app.config.get("STORAGE_BACKEND") not in ("local", "r2", "s3"):
         raise RuntimeError("STORAGE_BACKEND must be 'local', 'r2', or 's3'.")
+    app.config.setdefault("OLLAMA_EVALUATION_BUDGET_SECONDS", 600)
+    app.config.setdefault("OLLAMA_LOCK_WAIT_TIMEOUT", 30)
+    app.config.setdefault("OLLAMA_EVALUATION_MIN_TOKENS", 700)
+    app.config.setdefault("OLLAMA_EVALUATION_MAX_TOKENS", 1800)
+    app.config.setdefault("OLLAMA_NUM_CTX", 4096)
+    for setting in (
+        "OLLAMA_LOCK_WAIT_TIMEOUT", "OLLAMA_EVALUATION_BUDGET_SECONDS",
+        "OLLAMA_EVALUATION_MIN_TOKENS", "OLLAMA_EVALUATION_MAX_TOKENS", "OLLAMA_NUM_CTX",
+    ):
+        try:
+            app.config[setting] = int(app.config[setting])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(f"{setting} must be a positive integer.") from exc
+        if app.config[setting] <= 0:
+            raise RuntimeError(f"{setting} must be a positive integer.")
+    if app.config["OLLAMA_EVALUATION_MAX_TOKENS"] < app.config["OLLAMA_EVALUATION_MIN_TOKENS"]:
+        raise RuntimeError("OLLAMA_EVALUATION_MAX_TOKENS must be at least OLLAMA_EVALUATION_MIN_TOKENS.")
+    if app.config["OLLAMA_EVALUATION_MAX_TOKENS"] > app.config["OLLAMA_NUM_CTX"]:
+        raise RuntimeError("OLLAMA_EVALUATION_MAX_TOKENS cannot exceed OLLAMA_NUM_CTX.")
+    strong_threshold = app.config.setdefault("ADAPTIVE_STRONG_THRESHOLD", 8.0)
+    weak_threshold = app.config.setdefault("ADAPTIVE_WEAK_THRESHOLD", 5.0)
+    try:
+        thresholds_valid = (
+            math.isfinite(float(strong_threshold))
+            and math.isfinite(float(weak_threshold))
+            and 0 <= float(weak_threshold) < float(strong_threshold) <= 10
+        )
+    except (TypeError, ValueError, OverflowError):
+        thresholds_valid = False
+    if not thresholds_valid:
+        raise RuntimeError(
+            "ADAPTIVE_WEAK_THRESHOLD and ADAPTIVE_STRONG_THRESHOLD must be numbers from 0 to 10, with weak below strong."
+        )
+    app.config["ADAPTIVE_STRONG_THRESHOLD"] = float(strong_threshold)
+    app.config["ADAPTIVE_WEAK_THRESHOLD"] = float(weak_threshold)
     if app.config.get("LOG_LEVEL", "INFO") not in ("DEBUG", "INFO"):
         raise RuntimeError("LOG_LEVEL must be DEBUG or INFO.")
     if app.config["STORAGE_BACKEND"] == "r2":
