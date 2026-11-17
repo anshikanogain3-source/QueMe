@@ -4,6 +4,7 @@ import { ArrowRight, BarChart3, BookOpen, CheckCircle2, ClipboardList, FileBarCh
 import { api } from "./api.js";
 import { useAuth } from "./auth.jsx";
 import { Brand } from "./Brand.jsx";
+import { useFeedback } from "./feedback.jsx";
 
 const TYPES = ["technical", "hr", "behavioral", "communication", "other"];
 const emptyQuestion = { question_text: "", question_type: "technical", difficulty: "medium", expected_key_points: "", reference_answer: "", topics: "" };
@@ -63,6 +64,7 @@ function TeacherFrame({ user, activeItem, onNavigate, search, children }) {
 }
 
 function TeacherDashboard({ user }) {
+  const { confirmAction } = useFeedback();
   const navigate = useNavigate();
   const [tab, setTab] = useState("overview");
   const [activeItem, setActiveItem] = useState("overview");
@@ -215,7 +217,7 @@ function TeacherDashboard({ user }) {
 
   async function removeQuestion(question) {
     if (question.created_by !== user.user_id) { setError("Shared default questions cannot be deleted."); return; }
-    if (!window.confirm("Delete this question? Questions used by templates cannot be deleted.")) return;
+    if (!await confirmAction({ title: "Delete question?", description: "This permanently removes the question. Questions used by a template or interview cannot be deleted; deactivate them instead.", confirmLabel: "Delete question", destructive: true })) return;
     try { await api(`/questions/${question.question_id}`, { method: "DELETE" }); setQuestions((rows) => rows.filter((row) => row.question_id !== question.question_id)); flash("Question deleted."); }
     catch (err) { fail(err); }
   }
@@ -244,7 +246,7 @@ function TeacherDashboard({ user }) {
 
   async function deleteRubric(rubric) {
     if (rubric.created_by !== user.user_id) return;
-    if (!window.confirm("Delete this rubric? A rubric already used by a template cannot be deleted.")) return;
+    if (!await confirmAction({ title: "Delete rubric?", description: "Rubrics used by a template or interview cannot be deleted.", confirmLabel: "Delete rubric", destructive: true })) return;
     try { await api(`/rubrics/${rubric.rubric_id}`, { method: "DELETE" }); setRubrics((rows) => rows.filter((row) => row.rubric_id !== rubric.rubric_id)); flash("Rubric deleted."); }
     catch (err) { fail(err); }
   }
@@ -276,7 +278,7 @@ function TeacherDashboard({ user }) {
   }
 
   async function deleteTemplate(template) {
-    if (!window.confirm("Delete this template? Assigned interviews prevent deletion.")) return;
+    if (!await confirmAction({ title: "Delete interview template?", description: "Templates with assigned interviews cannot be deleted.", confirmLabel: "Delete template", destructive: true })) return;
     try { await api(`/templates/${template.template_id}`, { method: "DELETE" }); setTemplates((rows) => rows.filter((row) => row.template_id !== template.template_id)); flash("Template deleted."); }
     catch (err) { fail(err); }
   }
@@ -296,7 +298,7 @@ function TeacherDashboard({ user }) {
   }
 
   async function cancelInterview(interview) {
-    if (!window.confirm(`Cancel the scheduled interview for ${interview.student_name || "this student"}?`)) return;
+    if (!await confirmAction({ title: "Cancel scheduled interview?", description: `The scheduled interview for ${interview.student_name || "this student"} will be cancelled.`, confirmLabel: "Cancel interview", destructive: true })) return;
     try {
       await api(`/interviews/${interview.interview_id}/cancel`, { method: "POST" });
       flash("Scheduled interview cancelled."); await refresh();

@@ -3,8 +3,8 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { Activity, ArrowLeft, ArrowRight, AudioLines, BarChart3, BookOpen, BriefcaseBusiness, Check, ChevronDown, ClipboardCheck, Clock3, Eye, EyeOff, FileBarChart2, FileText, Headphones, House, LogOut, Menu, Mic, MicOff, Pause, Play, Settings2, ShieldCheck, Users, Video, VideoOff, X } from "lucide-react";
 import { api } from "./api.js";
 import { useAuth } from "./auth.jsx";
-import TeacherDashboard from "./TeacherDashboard.jsx";
 import { Brand, BrandMark } from "./Brand.jsx";
+import { useFeedback } from "./feedback.jsx";
 import { StudentWorkspace } from "./student/StudentWorkspace.jsx";
 import { StudentOverview } from "./student/StudentOverview.jsx";
 import { PracticeInterviews } from "./student/PracticeInterviews.jsx";
@@ -671,6 +671,7 @@ function InterviewAnalyticsSections({ report }) {
 }
 
 function ReportPage() {
+  const { notify } = useFeedback();
   const { interviewId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -682,7 +683,6 @@ function ReportPage() {
   const [saving, setSaving] = useState(false);
   const [savingQuestionId, setSavingQuestionId] = useState(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [expandedQuestions, setExpandedQuestions] = useState(() => new Set());
   const [openTranscripts, setOpenTranscripts] = useState(() => new Set());
   const [exporting, setExporting] = useState("");
@@ -715,7 +715,7 @@ function ReportPage() {
 
   async function saveOverallReview(event) {
     event.preventDefault();
-    setSaving(true); setError(""); setNotice("");
+    setSaving(true); setError("");
     try {
       const updated = await api(`/interviews/${interviewId}/report`, {
         method: "PATCH",
@@ -727,7 +727,7 @@ function ReportPage() {
       setReport(updated);
       setTeacherScore(updated.teacher_score ?? "");
       setTeacherRemark(updated.teacher_remark || "");
-      setNotice("Overall teacher review saved. Individual question reviews remain optional.");
+      notify("Overall teacher review saved. Individual question reviews remain optional.", "success");
     } catch (err) { setError(err.message); }
     finally { setSaving(false); }
   }
@@ -742,7 +742,7 @@ function ReportPage() {
   async function saveQuestionReview(id) {
     if (!hasQuestionReviewInput(id)) return;
     const edit = questionEdits[id] || {};
-    setSavingQuestionId(id); setError(""); setNotice("");
+    setSavingQuestionId(id); setError("");
     try {
       const updated = await api(`/interviews/${interviewId}/report`, {
         method: "PATCH",
@@ -770,7 +770,7 @@ function ReportPage() {
           },
         }));
       }
-      setNotice("Question review saved separately from the overall review.");
+      notify("Question review saved separately from the overall review.", "success");
     } catch (err) { setError(err.message); }
     finally { setSavingQuestionId(null); }
   }
@@ -783,6 +783,7 @@ function ReportPage() {
       const anchor = document.createElement("a");
       anchor.href = objectUrl; anchor.download = filename; anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      notify(`${filename.endsWith(".pdf") ? "PDF" : "Excel"} report downloaded.`, "success");
     } catch (err) { setError(err.message); }
     finally { setExporting(""); }
   }
@@ -824,7 +825,6 @@ function ReportPage() {
       </section>
       <p className="report-score-method">{report.score_method} Configured weights: {Math.round((report.score_weights?.content_weight ?? 0.7) * 100)}% content and {Math.round((report.score_weights?.delivery_weight ?? 0.3) * 100)}% delivery.</p>
       <InterviewAnalyticsSections report={report} />
-      {notice && <div className="alert alert-info" role="status">{notice}</div>}
       <div>
         <section className="report-question-list" aria-label="Question feedback">{questions.map((q) => {
           const id = q.interview_question_id;
@@ -832,6 +832,9 @@ function ReportPage() {
           const state = questionStatus(q);
           const stateLabel = state === "review" ? "Needs review" : state === "evaluated" ? "Evaluated" : "Evaluation unavailable";
           const rubricCriteria = q.evaluation?.rubric_snapshot?.criteria || Object.keys(q.evaluation?.criteria_scores || {}).map((name) => ({ name }));
+          const dual = q.evaluation?.dual_model;
+          const dualStatus = dual?.comparison?.status;
+          const hasLegacyModelEvaluation = !dual && (q.evaluation?.provider_attempt?.status === "SUCCESS" || q.evaluation?.content_score != null);
           return <article className={`report-question-card report-question-${state}`} key={id}>
             <button type="button" className="report-question-toggle" aria-expanded={isExpanded} aria-controls={`question-detail-${id}`} onClick={() => toggleSet(setExpandedQuestions, id)}>
               <span className="report-question-number">{String(q.question_order).padStart(2, "0")}</span><span className="report-question-title"><small>{q.is_followup ? "FOLLOW-UP QUESTION" : `QUESTION ${q.question_order}`}</small><strong>{q.question_text || "Question text unavailable"}</strong>{(q.content_score != null || q.delivery_score != null) && <span className="report-question-inline-scores">{q.content_score != null && <>Content {displayScore(q.content_score)}</>}{q.content_score != null && q.delivery_score != null && <span aria-hidden="true">·</span>}{q.delivery_score != null && <>Delivery {displayScore(q.delivery_score)}</>}</span>}</span>
@@ -839,7 +842,28 @@ function ReportPage() {
             </button>
             {isExpanded && <div id={`question-detail-${id}`} className="report-question-detail">
               {q.analysis_status?.status !== "COMPLETE" && <p className="report-review-notice">{q.analysis_status?.status?.replaceAll("_", " ") || "ANALYSIS STATUS UNAVAILABLE"}: {q.analysis_status?.reason || "No explanation is available."}</p>}
-              {q.evaluation?.feedback && <section className="report-feedback"><span className="eyebrow">AI SUMMARY</span><p>{q.evaluation.feedback}</p></section>}
+              {q.evaluation?.feedback && hasLegacyModelEvaluation && q.evaluation?.evaluation_status !== "UNAVAILABLE" && <section className="report-feedback"><span className="eyebrow">AI SUMMARY</span><p>{q.evaluation.feedback}</p></section>}
+              {dual && <section className="report-feedback"><span className="eyebrow">INDEPENDENT MODEL EVALUATION · {dualStatus?.replaceAll("_", " ") || "PENDING"}</span>
+                <p>{dual.comparison?.complete ? `Score difference: ${dual.comparison.score_difference ?? "unavailable"}/10.` : "Comparison incomplete; teacher review is required."} {dual.comparison?.teacher_review_reasons?.join(" · ")}</p>
+                <div className="report-feedback-columns">{["ollama", "gemini"].map((name) => {
+                  const provider = dual.providers?.[name] || {};
+                  const model = provider.evaluation || {};
+                  const title = name === "ollama" ? "Ollama" : "Gemini";
+                  return <article className="report-feedback-positive" key={name}><h3>{title} · {provider.model || "model unavailable"}</h3>
+                    <p>Status: {provider.status || "not run"}{provider.error_category ? ` · ${provider.error_category.replaceAll("_", " ")}` : ""}</p>
+                    <p>Score: {model.content_score == null ? "unavailable" : `${displayScore(model.content_score)}/10`} · {model.accuracy_category || "classification unavailable"}</p>
+                    {model.question_relevant != null && <p>Relevant: {model.question_relevant ? "yes" : "no"} · {model.relevance_explanation}</p>}
+                    {model.feedback && model.evaluation_status !== "UNAVAILABLE" && <p>{model.feedback}</p>}
+                    {model.missing_concepts?.length > 0 && <p><b>Missing concepts:</b> {model.missing_concepts.join(", ")}</p>}
+                    {model.correct_concepts?.length > 0 && <p><b>Correct concepts:</b> {model.correct_concepts.join(", ")}</p>}
+                    {model.incorrect_claims?.length > 0 && <p><b>Incorrect claims:</b> {model.incorrect_claims.join("; ")}</p>}
+                    {model.completeness && <p><b>Completeness:</b> {model.completeness.replaceAll("_", " ")}</p>}
+                    {model.suggested_improvements?.length > 0 && <p><b>Suggested improvements:</b> {model.suggested_improvements.join("; ")}</p>}
+                    {Object.entries(model.criterion_details || {}).map(([criterion, detail]) => <p key={criterion}><b>{criterion} evidence:</b> {detail.evidence ? `“${detail.evidence}”` : "unavailable"}{detail.evidence_explanation ? ` · ${detail.evidence_explanation}` : ""}</p>)}
+                  </article>;
+                })}</div>
+                <p>Review status: {q.needs_review ? "Teacher review required" : "No pending teacher review"}. AI recommendation: {dual.needs_teacher_review ? "review" : "provisional agreement"}. Final score source: {q.teacher_score != null ? "teacher" : q.final_ai_score != null ? "provisional AI" : "unavailable"}{q.teacher_score != null ? ` · teacher score ${displayScore(q.teacher_score)}/10` : ""}.</p>
+              </section>}
               {(q.evaluation?.technical_accuracy || q.evaluation?.missing_concepts?.length > 0 || q.evaluation?.correct_explanation) && <section className="report-feedback"><span className="eyebrow">ANSWER REVIEW</span>{q.evaluation.technical_accuracy && <p><b>Technical accuracy:</b> {q.evaluation.technical_accuracy}</p>}{q.evaluation.missing_concepts?.length > 0 && <p><b>Missing concepts:</b> {q.evaluation.missing_concepts.join(", ")}</p>}{q.evaluation.correct_explanation && <p><b>Suggested explanation:</b> {q.evaluation.correct_explanation}</p>}</section>}
               <div className="report-feedback-columns">{q.evaluation?.strengths?.length > 0 && <section className="report-feedback-positive"><h3>Strengths</h3><ul>{q.evaluation.strengths.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></section>}{q.evaluation?.weaknesses?.length > 0 && <section className="report-feedback-growth"><h3>Areas to improve</h3><ul>{q.evaluation.weaknesses.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul></section>}</div>
               {rubricCriteria.length > 0 && <section className="report-feedback"><span className="eyebrow">AI RUBRIC BREAKDOWN · {q.evaluation.rubric_snapshot?.name || "Interview rubric"}</span><div className="report-criteria">{rubricCriteria.map((criterionItem) => {
@@ -939,6 +963,7 @@ function InterviewerPortrait({ state }) {
 const INTERVIEW_GREETING = "Hello! Welcome to your QueMe interview. Take your time, listen carefully, and answer each question as clearly as you can. Let's begin.";
 
 function InterviewPage() {
+  const { confirmAction } = useFeedback();
   const { interviewId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -946,6 +971,7 @@ function InterviewPage() {
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(true);
   const [working, setWorking] = useState(false);
+  const advanceInFlightRef = useRef(false);
   const [recording, setRecording] = useState(false);
   const [recordingStarting, setRecordingStarting] = useState(false);
   const [playingClip, setPlayingClip] = useState(false);
@@ -1357,16 +1383,28 @@ function InterviewPage() {
     } finally { setWorking(false); }
   }
 
-  function skipQuestion() {
-    if (window.confirm("Skip this question? It will be marked for teacher review.")) advance("SKIP");
+  async function skipQuestion() {
+    const approved = await confirmAction({
+      title: "Skip this question?",
+      description: "This question will be marked for teacher review. Your interview will continue to the next question.",
+      confirmLabel: "Skip question",
+    });
+    if (approved) advance("SKIP");
   }
 
-  function finishInterview() {
-    if (window.confirm("End this interview now? Unanswered questions will be marked for teacher review.")) advance("DONE");
+  async function finishInterview() {
+    const approved = await confirmAction({
+      title: "End this interview?",
+      description: "Any unanswered questions will be marked for teacher review.",
+      confirmLabel: "End interview",
+      destructive: true,
+    });
+    if (approved) advance("DONE");
   }
 
   async function advance(intent) {
-    if (!session || !question || working || recording || clip || interviewPaused) return;
+    if (!session || !question || advanceInFlightRef.current || working || recording || clip || interviewPaused) return;
+    advanceInFlightRef.current = true;
     cancelSpeech();
     setSpeechState("ready");
     setWorking(true); setError(""); setNotice(""); setClip(null);
@@ -1377,7 +1415,7 @@ function InterviewPage() {
         ? "Your interview is submitted. We’ll prepare the report after processing finishes."
         : intent === "SKIP" ? "Question skipped." : "Moving to the next question.");
     } catch (err) { setError(err.message); }
-    finally { setWorking(false); }
+    finally { advanceInFlightRef.current = false; setWorking(false); }
   }
 
   if (busy) return <><TopBar user={user} /><Loading label="Opening your interview" /></>;

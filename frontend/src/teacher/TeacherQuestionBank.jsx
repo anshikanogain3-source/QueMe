@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { TeacherWorkspace } from "./TeacherWorkspace.jsx";
 
 const TYPES = ["technical", "hr", "behavioral", "communication", "other"];
@@ -23,11 +24,13 @@ const emptyQuestion = {
 };
 
 export function TeacherQuestionBank({ user }) {
+  const { confirmAction, notify } = useFeedback();
   const [questions, setQuestions] = useState([]);
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [updatingQuestionId, setUpdatingQuestionId] = useState(null);
+  const [deletingQuestionId, setDeletingQuestionId] = useState(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
   const [questionForm, setQuestionForm] = useState(emptyQuestion);
   const [questionEditId, setQuestionEditId] = useState(null);
@@ -58,7 +61,6 @@ export function TeacherQuestionBank({ user }) {
     event.preventDefault();
     setSaving(true);
     setError("");
-    setNotice("");
     try {
       const saved = await api(
         questionEditId ? `/questions/${questionEditId}` : "/questions",
@@ -74,7 +76,7 @@ export function TeacherQuestionBank({ user }) {
       );
       setQuestionForm(emptyQuestion);
       setQuestionEditId(null);
-      setNotice("Question saved to question bank.");
+      notify(questionEditId ? "Question updated." : "Question saved to question bank.", "success");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -83,22 +85,34 @@ export function TeacherQuestionBank({ user }) {
   }
 
   async function removeQuestion(question) {
+    if (deletingQuestionId) return;
+    setError("");
     if (question.created_by !== user.user_id) {
       setError("Shared default questions cannot be deleted.");
       return;
     }
-    if (!window.confirm("Delete this question? Questions used by templates cannot be deleted."))
-      return;
+    const approved = await confirmAction({
+      title: "Delete question?",
+      description: "This permanently removes the question. Questions used by a template or interview cannot be deleted; deactivate them instead.",
+      confirmLabel: "Delete question",
+      destructive: true,
+    });
+    if (!approved) return;
+    setDeletingQuestionId(question.question_id);
     try {
       await api(`/questions/${question.question_id}`, { method: "DELETE" });
       setQuestions((rows) => rows.filter((r) => r.question_id !== question.question_id));
-      setNotice("Question deleted.");
+      notify("Question deleted.", "success");
     } catch (err) {
-      setError(err.message);
+      notify(err.message || "Could not delete the question.", "error");
+    } finally {
+      setDeletingQuestionId(null);
     }
   }
 
   async function toggleActive(question) {
+    if (updatingQuestionId || deletingQuestionId) return;
+    setUpdatingQuestionId(question.question_id);
     try {
       const saved = await api(`/questions/${question.question_id}`, {
         method: "PATCH",
@@ -107,9 +121,11 @@ export function TeacherQuestionBank({ user }) {
       setQuestions((rows) =>
         rows.map((r) => (r.question_id === saved.question_id ? saved : r))
       );
-      setNotice(`Question ${saved.is_active ? "reactivated" : "deactivated"}.`);
+      notify(`Question ${saved.is_active ? "reactivated" : "deactivated"}.`, "success");
     } catch (err) {
       setError(err.message);
+    } finally {
+      setUpdatingQuestionId(null);
     }
   }
 
@@ -143,11 +159,6 @@ export function TeacherQuestionBank({ user }) {
         {error && (
           <div className="alert alert-error" role="alert">
             {error}
-          </div>
-        )}
-        {notice && (
-          <div className="alert alert-info" role="status">
-            {notice}
           </div>
         )}
 
@@ -235,6 +246,7 @@ export function TeacherQuestionBank({ user }) {
                               type="button"
                               className="button button-quiet button-small"
                               onClick={() => toggleActive(q)}
+                              disabled={updatingQuestionId !== null || deletingQuestionId !== null}
                             >
                               <span>{q.is_active ? "Deactivate" : "Reactivate"}</span>
                             </button>
@@ -242,6 +254,7 @@ export function TeacherQuestionBank({ user }) {
                               type="button"
                               className="button button-quiet button-small"
                               onClick={() => removeQuestion(q)}
+                              disabled={updatingQuestionId !== null || deletingQuestionId !== null}
                               aria-label="Delete question"
                             >
                               <Trash2 size={14} />

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  CheckCircle2,
   Filter,
   GraduationCap,
   Mail,
@@ -13,21 +12,21 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { AdminWorkspace } from "./AdminWorkspace.jsx";
 
 export function AdminUsers({ user }) {
+  const { notify } = useFeedback();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState("all"); // 'all' | 'pending' | 'students' | 'teachers'
   const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'ACTIVE' | 'PENDING' | 'REJECTED'
   const [processingId, setProcessingId] = useState(null);
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
+    notify(msg, "success");
   }
 
   function fail(err) {
@@ -108,12 +107,6 @@ export function AdminUsers({ user }) {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 

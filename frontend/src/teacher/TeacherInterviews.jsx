@@ -17,11 +17,13 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { TeacherWorkspace } from "./TeacherWorkspace.jsx";
 
 const TYPES = ["technical", "hr", "behavioral", "communication", "other"];
 
 export function TeacherInterviews({ user }) {
+  const { confirmAction, notify } = useFeedback();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = searchParams.get("tab") || "sessions"; // 'sessions' | 'templates' | 'create' | 'assign'
   const [activeTab, setActiveTab] = useState(initialTab);
@@ -68,8 +70,8 @@ export function TeacherInterviews({ user }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [busy, setBusy] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [processingAction, setProcessingAction] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const navigate = useNavigate();
 
   async function refresh() {
@@ -205,7 +207,6 @@ export function TeacherInterviews({ user }) {
     }
     setSaving(true);
     setError("");
-    setNotice("");
     try {
       const result = await api("/questions/commit-drafts", {
         method: "POST",
@@ -220,9 +221,7 @@ export function TeacherInterviews({ user }) {
       setSelectedQuestions((prev) => [...prev, ...addedIds.filter((id) => !prev.includes(id))]);
       setDrafts((prev) => prev.filter((_, index) => !selectedDrafts.includes(index)));
       setSelectedDrafts([]);
-      setNotice(
-        `${addedIds.length} question(s) added to this interview and saved to your library.`
-      );
+      notify(`${addedIds.length} question(s) added to this interview and saved to your library.`, "success");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -232,7 +231,6 @@ export function TeacherInterviews({ user }) {
 
   async function saveTemplate() {
     setError("");
-    setNotice("");
     if (!templateForm.title.trim()) {
       setError("Enter an interview title.");
       return;
@@ -270,7 +268,7 @@ export function TeacherInterviews({ user }) {
       setSelectedQuestions([]);
       setQuestionRubrics({});
       setTemplateEditId(null);
-      setNotice("Interview template saved successfully.");
+      notify(templateEditId ? "Interview template updated." : "Interview template saved successfully.", "success");
       switchTab("templates");
     } catch (err) {
       setError(err.message);
@@ -296,13 +294,24 @@ export function TeacherInterviews({ user }) {
   }
 
   async function deleteTemplate(template) {
-    if (!window.confirm("Delete this template? Assigned interviews prevent deletion.")) return;
+    if (processingAction) return;
+    setError("");
+    const approved = await confirmAction({
+      title: "Delete interview template?",
+      description: "Templates with assigned interviews cannot be deleted.",
+      confirmLabel: "Delete template",
+      destructive: true,
+    });
+    if (!approved) return;
+    setProcessingAction(true);
     try {
       await api(`/templates/${template.template_id}`, { method: "DELETE" });
       setTemplates((rows) => rows.filter((r) => r.template_id !== template.template_id));
-      setNotice("Template deleted.");
+      notify("Template deleted.", "success");
     } catch (err) {
-      setError(err.message);
+      notify(err.message || "Could not delete the template.", "error");
+    } finally {
+      setProcessingAction(false);
     }
   }
 
@@ -310,7 +319,6 @@ export function TeacherInterviews({ user }) {
     event.preventDefault();
     setSaving(true);
     setError("");
-    setNotice("");
     const payload = {
       template_id: Number(assignment.template_id),
       scheduled_at: assignment.scheduled_at || null,
@@ -323,7 +331,7 @@ export function TeacherInterviews({ user }) {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      setNotice(`Interview assigned to ${result.assigned_count} student(s).`);
+      notify(`Interview assigned to ${result.assigned_count} student(s).`, "success");
       await refresh();
       switchTab("sessions");
     } catch (err) {
@@ -334,18 +342,24 @@ export function TeacherInterviews({ user }) {
   }
 
   async function cancelInterview(interview) {
-    if (
-      !window.confirm(
-        `Cancel scheduled interview for ${interview.student_name || "this student"}?`
-      )
-    )
-      return;
+    if (processingAction) return;
+    setError("");
+    const approved = await confirmAction({
+      title: "Cancel scheduled interview?",
+      description: `The scheduled interview for ${interview.student_name || "this student"} will be cancelled.`,
+      confirmLabel: "Cancel interview",
+      destructive: true,
+    });
+    if (!approved) return;
+    setProcessingAction(true);
     try {
       await api(`/interviews/${interview.interview_id}/cancel`, { method: "POST" });
-      setNotice("Scheduled interview cancelled.");
+      notify("Scheduled interview cancelled.", "success");
       await refresh();
     } catch (err) {
-      setError(err.message);
+      notify(err.message || "Could not cancel the interview.", "error");
+    } finally {
+      setProcessingAction(false);
     }
   }
 
@@ -390,11 +404,6 @@ export function TeacherInterviews({ user }) {
         {error && (
           <div className="alert alert-error" role="alert">
             {error}
-          </div>
-        )}
-        {notice && (
-          <div className="alert alert-info" role="status">
-            {notice}
           </div>
         )}
 
@@ -551,6 +560,7 @@ export function TeacherInterviews({ user }) {
                             type="button"
                             className="button button-quiet button-wide"
                             onClick={() => cancelInterview(item)}
+                            disabled={processingAction}
                           >
                             <X size={14} />
                             <span>Cancel Session</span>
@@ -631,6 +641,7 @@ export function TeacherInterviews({ user }) {
                         type="button"
                         className="button button-quiet button-small"
                         onClick={() => deleteTemplate(tpl)}
+                        disabled={processingAction}
                         aria-label="Delete template"
                       >
                         <Trash2 size={14} />

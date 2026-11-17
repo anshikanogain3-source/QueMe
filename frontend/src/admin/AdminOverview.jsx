@@ -20,6 +20,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { AdminWorkspace } from "./AdminWorkspace.jsx";
 
 function formatDate(iso) {
@@ -34,13 +35,13 @@ function formatDate(iso) {
 }
 
 export function AdminOverview({ user }) {
+  const { notify } = useFeedback();
   const navigate = useNavigate();
   const [analytics, setAnalytics] = useState(null);
   const [pendingUsers, setPendingUsers] = useState([]);
   const [recentReports, setRecentReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [processingId, setProcessingId] = useState(null);
   const [exporting, setExporting] = useState(false);
 
@@ -67,8 +68,7 @@ export function AdminOverview({ user }) {
   }, []);
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
+    notify(msg, "success");
   }
 
   async function handleUpdateStatus(userId, status) {
@@ -131,12 +131,6 @@ export function AdminOverview({ user }) {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 

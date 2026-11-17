@@ -3,7 +3,6 @@ import {
   AlertCircle,
   BookOpen,
   Calendar,
-  CheckCircle2,
   GraduationCap,
   Layers,
   Plus,
@@ -12,11 +11,13 @@ import {
   Sliders,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { AdminWorkspace } from "./AdminWorkspace.jsx";
 
 const SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"];
 
 export function AdminSettings({ user }) {
+  const { notify } = useFeedback();
   const [weights, setWeights] = useState({ content_weight: 0.7, delivery_weight: 0.3 });
   const [courses, setCourses] = useState([]);
   const [cohorts, setCohorts] = useState([]);
@@ -26,11 +27,9 @@ export function AdminSettings({ user }) {
   const [creatingCohort, setCreatingCohort] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
+    notify(msg, "success");
   }
 
   function fail(err) {
@@ -70,7 +69,6 @@ export function AdminSettings({ user }) {
     e.preventDefault();
     setSavingWeights(true);
     setError("");
-    setNotice("");
 
     const cw = Number(weights.content_weight);
     const dw = Number(weights.delivery_weight);
@@ -104,7 +102,6 @@ export function AdminSettings({ user }) {
 
     setCreatingCohort(true);
     setError("");
-    setNotice("");
 
     try {
       await api("/admin/semesters", {
@@ -138,12 +135,6 @@ export function AdminSettings({ user }) {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 

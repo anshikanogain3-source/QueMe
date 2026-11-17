@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import {
   AlertCircle,
   BarChart2,
-  CheckCircle2,
   Download,
   FileCheck2,
   FileSpreadsheet,
@@ -15,19 +14,19 @@ import {
   Users,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { AdminWorkspace } from "./AdminWorkspace.jsx";
 
 export function AdminAnalytics({ user }) {
+  const { notify } = useFeedback();
   const [analytics, setAnalytics] = useState(null);
   const [validationData, setValidationData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [exportingValidation, setExportingValidation] = useState(false);
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
+    notify(msg, "success");
   }
 
   function fail(err) {
@@ -96,12 +95,6 @@ export function AdminAnalytics({ user }) {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertCircle,
-  CheckCircle2,
   Download,
   Eye,
   FileBarChart2,
@@ -13,6 +12,7 @@ import {
   Search,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { AdminWorkspace } from "./AdminWorkspace.jsx";
 
 function formatDate(iso) {
@@ -27,18 +27,17 @@ function formatDate(iso) {
 }
 
 export function AdminReports({ user }) {
+  const { notify } = useFeedback();
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [exporting, setExporting] = useState(false);
   const [downloadingId, setDownloadingId] = useState(null);
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 4000);
+    notify(msg, "success");
   }
 
   function fail(err) {
@@ -134,12 +133,6 @@ export function AdminReports({ user }) {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 

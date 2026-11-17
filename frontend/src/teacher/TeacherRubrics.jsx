@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  CheckCircle2,
   ClipboardList,
   Eye,
   Edit2,
@@ -11,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api.js";
+import { useFeedback } from "../feedback.jsx";
 import { useAuth } from "../auth.jsx";
 import { TeacherWorkspace } from "./TeacherWorkspace.jsx";
 
@@ -30,11 +30,11 @@ const EMPTY_RUBRIC_FORM = {
 };
 
 export function TeacherRubrics() {
+  const { confirmAction, notify } = useFeedback();
   const { user } = useAuth();
   const [rubrics, setRubrics] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
 
@@ -43,15 +43,14 @@ export function TeacherRubrics() {
   const [rubricForm, setRubricForm] = useState(EMPTY_RUBRIC_FORM);
   const [rubricEditId, setRubricEditId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [deletingRubricId, setDeletingRubricId] = useState(null);
 
   function flash(msg) {
-    setNotice(msg);
-    window.setTimeout(() => setNotice(""), 3500);
+    notify(msg, "success");
   }
 
   function fail(err) {
     setError(err?.message || "Operation failed.");
-    window.setTimeout(() => setError(""), 5000);
   }
 
   async function loadRubrics() {
@@ -147,19 +146,28 @@ export function TeacherRubrics() {
   }
 
   async function handleDeleteRubric(r) {
+    if (deletingRubricId) return;
+    setError("");
     if (r.created_by !== user?.user_id) {
       setError("You can only delete rubrics you authored.");
       return;
     }
-    if (!window.confirm(`Delete "${r.rubric_name}"? If used by templates, deletion may be blocked.`)) {
-      return;
-    }
+    const approved = await confirmAction({
+      title: "Delete rubric?",
+      description: `Delete “${r.rubric_name}”? Rubrics used by a template or interview cannot be deleted.`,
+      confirmLabel: "Delete rubric",
+      destructive: true,
+    });
+    if (!approved) return;
+    setDeletingRubricId(r.rubric_id);
     try {
       await api(`/rubrics/${r.rubric_id}`, { method: "DELETE" });
       setRubrics((rows) => rows.filter((row) => row.rubric_id !== r.rubric_id));
-      flash("Rubric deleted.");
+      notify("Rubric deleted.", "success");
     } catch (err) {
-      fail(err);
+      notify(err.message || "Could not delete the rubric.", "error");
+    } finally {
+      setDeletingRubricId(null);
     }
   }
 
@@ -200,12 +208,6 @@ export function TeacherRubrics() {
           <div className="qm-alert qm-alert-error" role="alert">
             <AlertCircle size={16} />
             <span>{error}</span>
-          </div>
-        )}
-        {notice && (
-          <div className="qm-alert qm-alert-success" role="status">
-            <CheckCircle2 size={16} />
-            <span>{notice}</span>
           </div>
         )}
 
@@ -344,6 +346,7 @@ export function TeacherRubrics() {
                             type="button"
                             className="teacher-danger-btn rubric-sm-btn"
                             onClick={() => handleDeleteRubric(r)}
+                            disabled={deletingRubricId !== null}
                             title="Delete Rubric"
                           >
                             <Trash2 size={13} />
