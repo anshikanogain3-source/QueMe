@@ -5,6 +5,7 @@ import json
 import math
 from statistics import mean
 from xml.sax.saxutils import escape
+from flask import current_app
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
@@ -18,6 +19,128 @@ from ..extensions import db
 from ..models import InterviewQuestion, Report
 from .audio_analysis import combine_scores
 from .llm import evaluate_answer
+
+DUAL_EVALUATION_VERSION = 1
+DUAL_SCORE_DISAGREEMENT_THRESHOLD = 2.0
+
+
+def _concept_set(items):
+    return {" ".join("".join(ch.lower() if ch.isalnum() else " " for ch in item).split()) for item in items if isinstance(item, str)}
+
+
+def _compare_dual_evaluations(provider_results):
+    ollama = provider_results.get("ollama", {})
+    gemini = provider_results.get("gemini", {})
+    successes = [item for item in (ollama, gemini) if item.get("status") == "SUCCESS" and isinstance(item.get("evaluation"), dict)]
+    if len(successes) != 2:
+        return {
+            "status": "INCOMPLETE" if successes else "FAILED",
+            "complete": False,
+            "score_difference": None,
+            "disagreements": [],
+            "teacher_review_reasons": ["dual_evaluation_incomplete"],
+        }
+    left, right = ollama["evaluation"], gemini["evaluation"]
+    if left.get("content_score") is None or right.get("content_score") is None:
+        return {
+            "status": "INCOMPLETE",
+            "complete": False,
+            "score_difference": None,
+            "disagreements": ["insufficient_evaluation_evidence"],
+            "teacher_review_reasons": ["insufficient_evaluation_evidence"],
+        }
+    reasons, disagreements = [], []
+    if left.get("question_relevant") != right.get("question_relevant"):
+        disagreements.append("relevance_disagreement")
+        reasons.append("relevance_disagreement")
+    if left.get("accuracy_category") != right.get("accuracy_category"):
+        disagreements.append("classification_disagreement")
+        reasons.append("classification_disagreement")
+    if left.get("completeness") != right.get("completeness"):
+        disagreements.append("completeness_disagreement")
+        reasons.append("completeness_disagreement")
+    left_score, right_score = left.get("content_score"), right.get("content_score")
+    score_difference = round(abs(left_score - right_score), 2) if isinstance(left_score, (int, float)) and isinstance(right_score, (int, float)) else None
+    if score_difference is None:
+        disagreements.append("score_unavailable")
+        reasons.append("insufficient_evaluation_evidence")
+    elif score_difference >= DUAL_SCORE_DISAGREEMENT_THRESHOLD:
+        disagreements.append("material_score_difference")
+        reasons.append("material_score_difference")
+    elif score_difference > 0:
+        disagreements.append("minor_score_difference")
+        reasons.append("minor_score_difference")
+    # A score crossing an existing class boundary is material even when the gap is small.
+    boundaries = (3, 7, 9)
+    if score_difference is not None and any((left_score < boundary <= right_score) or (right_score < boundary <= left_score) for boundary in boundaries):
+        disagreements.append("score_category_boundary")
+        reasons.append("score_category_boundary")
+    left_scores = left.get("criteria_scores", {}) if isinstance(left.get("criteria_scores"), dict) else {}
+    right_scores = right.get("criteria_scores", {}) if isinstance(right.get("criteria_scores"), dict) else {}
+    if set(left_scores) != set(right_scores):
+        disagreements.append("rubric_criterion_mapping_disagreement")
+        reasons.append("rubric_criterion_mapping_disagreement")
+    criterion_conflicts = [name for name in left_scores.keys() & right_scores.keys()
+                           if isinstance(left_scores[name], (int, float)) and isinstance(right_scores[name], (int, float))
+                           and abs(left_scores[name] - right_scores[name]) >= DUAL_SCORE_DISAGREEMENT_THRESHOLD]
+    if criterion_conflicts:
+        disagreements.append("rubric_criterion_conflict")
+        reasons.append("rubric_criterion_conflict:" + ", ".join(sorted(criterion_conflicts)))
+    if _concept_set(left.get("missing_concepts", [])) != _concept_set(right.get("missing_concepts", [])):
+        disagreements.append("missing_concept_disagreement")
+        reasons.append("missing_concept_disagreement")
+    if _concept_set(left.get("incorrect_claims", [])) != _concept_set(right.get("incorrect_claims", [])):
+        disagreements.append("incorrect_claim_disagreement")
+        reasons.append("incorrect_claim_disagreement")
+    if _concept_set(left.get("correct_concepts", [])) != _concept_set(right.get("correct_concepts", [])):
+        disagreements.append("correct_concept_disagreement")
+        reasons.append("correct_concept_disagreement")
+    left_details = left.get("criterion_details", {}) if isinstance(left.get("criterion_details"), dict) else {}
+    right_details = right.get("criterion_details", {}) if isinstance(right.get("criterion_details"), dict) else {}
+    evidence_conflicts = [name for name in left_details.keys() & right_details.keys()
+                          if left_details[name].get("evidence") != right_details[name].get("evidence")]
+    if evidence_conflicts:
+        disagreements.append("evidence_excerpt_disagreement")
+        reasons.append("evidence_excerpt_disagreement")
+    if _concept_set(left.get("suggested_improvements", [])) != _concept_set(right.get("suggested_improvements", [])):
+        disagreements.append("suggested_improvement_disagreement")
+        reasons.append("suggested_improvement_disagreement")
+    for evaluation in (left, right):
+        scores = evaluation.get("criteria_scores", {})
+        details = evaluation.get("criterion_details", {})
+        if any(score > 0 and (
+            not isinstance(details.get(name), dict)
+            or not details[name].get("evidence")
+            or details[name].get("evidence_supports_claim") is not True
+        ) for name, score in scores.items() if isinstance(score, (int, float))):
+            disagreements.append("unsupported_positive_evidence")
+            reasons.append("unsupported_positive_evidence")
+            break
+        if evaluation.get("completeness") == "SUBSTANTIALLY_INCORRECT":
+            reasons.append("substantially_incorrect_answer")
+    if left.get("needs_teacher_review") or right.get("needs_teacher_review"):
+        reasons.append("provider_review_required")
+    if any(isinstance(score, (int, float)) and score > 0 for item in (left, right)
+           for score in (item.get("criteria_scores", {}) or {}).values()):
+        reasons.append("positive_score_teacher_review_required")
+    if not left.get("question_relevant") or not right.get("question_relevant"):
+        reasons.append("answer_not_relevant")
+    material = any(reason in {
+        "relevance_disagreement", "classification_disagreement", "material_score_difference",
+        "completeness_disagreement", "score_category_boundary", "rubric_criterion_conflict",
+        "rubric_criterion_mapping_disagreement", "missing_concept_disagreement",
+        "incorrect_claim_disagreement", "correct_concept_disagreement", "unsupported_positive_evidence",
+        "substantially_incorrect_answer",
+    } or reason.startswith("rubric_criterion_conflict:") for reason in reasons)
+    status = "MATERIAL_DISAGREEMENT" if material else "MINOR_DISAGREEMENT" if disagreements else "AGREEMENT"
+    return {
+        "status": status,
+        "complete": True,
+        "score_difference": score_difference,
+        "disagreements": sorted(set(disagreements)),
+        "teacher_review_reasons": sorted(set(reasons)),
+        "criterion_conflicts": sorted(criterion_conflicts),
+    }
 
 AI_DECISION_SUPPORT_DISCLAIMER = (
     "QueMe's AI feedback is decision support for practice and learning. "
@@ -63,14 +186,78 @@ def evaluate_interview_answer(question, *, correlation_id=None):
                 "criteria": criteria,
             },
         }
-        if correlation_id:
+        if current_app.config.get("EVALUATION_MODE", "dual_sequential") == "dual_sequential":
+            old_json = question.evaluation_json if isinstance(question.evaluation_json, dict) else {}
+            saved = old_json.get("dual_model") if isinstance(old_json.get("dual_model"), dict) else {}
+            providers = dict(saved.get("providers", {})) if saved.get("version") == DUAL_EVALUATION_VERSION else {}
+            for provider in ("ollama", "gemini"):
+                prior = providers.get(provider, {})
+                # Successful output is durable across worker retries. Permanent failures are final too.
+                if prior.get("status") == "SUCCESS" or (prior.get("status") == "FAILED" and not prior.get("retryable")):
+                    continue
+                provider_result = evaluate_answer(
+                    evaluation_payload,
+                    correlation_id=correlation_id,
+                    provider_override=provider,
+                )
+                attempt = provider_result.pop("provider_attempt", {})
+                count = int(prior.get("attempt_count", 0)) + int(attempt.get("attempt_count", 0))
+                providers[provider] = {
+                    "provider": provider,
+                    "model": attempt.get("model"),
+                    "status": attempt.get("status", "FAILED"),
+                    "duration_ms": int(prior.get("duration_ms", 0)) + int(attempt.get("duration_ms", 0)),
+                    "attempt_count": count,
+                    "error_category": attempt.get("error_category"),
+                    "retryable": bool(attempt.get("retryable")),
+                    "evaluation": {key: value for key, value in provider_result.items() if key not in ("retryable", "error_category")}
+                    if attempt.get("status") == "SUCCESS" else None,
+                }
+                # Commit each provider independently so a worker interruption cannot erase its result.
+                question.evaluation_json = {**old_json, "dual_model": {
+                    "version": DUAL_EVALUATION_VERSION,
+                    "providers": providers,
+                    "comparison": {"status": "INCOMPLETE", "complete": False, "teacher_review_reasons": ["comparison_pending"]},
+                }}
+                db.session.commit()
+            comparison = _compare_dual_evaluations(providers)
+            left = providers.get("ollama", {}).get("evaluation") or {}
+            right = providers.get("gemini", {}).get("evaluation") or {}
+            same_score = (
+                comparison.get("complete")
+                and left.get("content_score") is not None
+                and left.get("content_score") == right.get("content_score")
+            )
+            if comparison.get("status") == "AGREEMENT" and same_score:
+                evaluation = dict(left)
+            else:
+                evaluation = {
+                    "criteria_scores": {}, "criterion_details": {}, "content_score": None,
+                    "evaluation_status": "UNAVAILABLE", "feedback": "",
+                    "strengths": [], "weaknesses": [], "missing_concepts": [],
+                }
+            needs_review = needs_review or comparison.get("status") != "AGREEMENT" or bool(comparison.get("teacher_review_reasons"))
+            needs_review = needs_review or bool(left.get("needs_teacher_review")) or bool(right.get("needs_teacher_review"))
+            evaluation["dual_model"] = {
+                "version": DUAL_EVALUATION_VERSION,
+                "providers": providers,
+                "comparison": comparison,
+                "decision": "TEACHER_REVIEW" if needs_review else "PROVISIONAL_AGREEMENT",
+                "needs_teacher_review": needs_review,
+                "retryable": any(item.get("status") == "FAILED" and item.get("retryable") for item in providers.values()),
+            }
+            if evaluation["dual_model"]["retryable"]:
+                evaluation["error"] = "A transient provider failure is pending a bounded retry."
+                evaluation["retryable"] = True
+            evaluation["needs_teacher_review"] = needs_review
+        else:
+            provider = current_app.config.get("EVALUATION_PROVIDER", "ollama")
             evaluation = evaluate_answer(
                 evaluation_payload,
                 correlation_id=correlation_id,
+                provider_override=provider,
             )
-        else:
-            evaluation = evaluate_answer(evaluation_payload)
-        needs_review = needs_review or bool(evaluation.get("needs_teacher_review"))
+            needs_review = needs_review or bool(evaluation.get("needs_teacher_review"))
     rubric_snapshot = {
         "rubric_id": rubric.rubric_id if rubric else None,
         "name": rubric.rubric_name if rubric else "General interview rubric",
@@ -96,8 +283,16 @@ def evaluate_interview_answer(question, *, correlation_id=None):
             "content_weight": content_weight,
             "delivery_weight": delivery_weight,
         }
-        question.final_ai_score = combine_scores(content_score, delivery_score, content_weight, delivery_weight)
-    question.needs_review = needs_review
+        if evaluation.get("accuracy_category") == "INCORRECT_OR_IRRELEVANT":
+            question.final_ai_score = content_score
+        else:
+            question.final_ai_score = combine_scores(content_score, delivery_score, content_weight, delivery_weight)
+    prior_reviews = getattr(question, "reviews", ()) or ()
+    teacher_has_reviewed = bool(getattr(question, "teacher_score", None) is not None or getattr(question, "teacher_remark", None)) or any(
+        item.teacher_score is not None or item.teacher_remark or item.teacher_criteria_json
+        for item in prior_reviews
+    )
+    question.needs_review = False if teacher_has_reviewed else needs_review
     question.evaluation_json = evaluation
     return evaluation
 
@@ -124,7 +319,10 @@ def generate_interview_report(interview):
     if report.teacher_score is not None or any(q.teacher_score is not None for q in questions):
         report.score_source = "TEACHER"
     elif report.ai_final_score is not None:
-        report.score_source = "AI_AUDIO"
+        report.score_source = "AI_DUAL_AUDIO" if any(
+            isinstance(q.evaluation_json, dict) and isinstance(q.evaluation_json.get("dual_model"), dict)
+            for q in questions
+        ) else "AI_AUDIO"
     else:
         report.score_source = "NEEDS_REVIEW"
     if report.reviewed_at:
@@ -593,7 +791,41 @@ def build_pdf(interview, questions, report):
                 styles["Normal"],
             ))
         ev = q.evaluation_json or {}
-        if ev.get("feedback"):
+        dual = ev.get("dual_model") if isinstance(ev, dict) else None
+        if dual:
+            comparison = dual.get("comparison", {})
+            story.append(Paragraph(
+                f"Dual-model comparison: {escape(str(comparison.get('status', 'PENDING')))} · "
+                f"score difference {escape(str(comparison.get('score_difference', 'unavailable')))} · "
+                f"teacher review {'required' if dual.get('needs_teacher_review') else 'not required'}.",
+                styles["Normal"],
+            ))
+            for provider_name in ("ollama", "gemini"):
+                provider = dual.get("providers", {}).get(provider_name, {})
+                model = provider.get("evaluation") or {}
+                story.append(Paragraph(
+                    f"{escape(provider_name.title())} ({escape(str(provider.get('model') or 'unknown model'))}): "
+                    f"{escape(str(provider.get('status', 'not run')))} · score "
+                    f"{escape(str(model.get('content_score', 'unavailable')))} · "
+                    f"{escape(str(model.get('accuracy_category', 'unavailable')))}.",
+                    styles["Normal"],
+                ))
+                if model.get("feedback") and model.get("evaluation_status") != "UNAVAILABLE":
+                    story.append(Paragraph(f"{escape(provider_name.title())} feedback: {escape(str(model['feedback']))}", styles["Normal"]))
+                if model.get("missing_concepts"):
+                    story.append(Paragraph(f"{escape(provider_name.title())} missing concepts: {escape(', '.join(model['missing_concepts']))}", styles["Normal"]))
+                details = model.get("criterion_details", {})
+                if isinstance(details, dict):
+                    for criterion, detail in details.items():
+                        if isinstance(detail, dict):
+                            evidence = detail.get("evidence") or "unavailable"
+                            story.append(Paragraph(
+                                f"{escape(provider_name.title())} {escape(str(criterion))} evidence: {escape(str(evidence))} · "
+                                f"{escape(str(detail.get('evidence_explanation') or ''))}", styles["Normal"],
+                            ))
+        elif ev.get("feedback") and ev.get("evaluation_status") != "UNAVAILABLE" and (
+            ev.get("provider_attempt", {}).get("status") == "SUCCESS" or ev.get("content_score") is not None
+        ):
             story.append(Paragraph(f"AI summary: {escape(str(ev.get('feedback')))}", styles["Normal"]))
         criterion_scores = ev.get("criteria_scores", {}) if isinstance(ev, dict) else {}
         criterion_details = ev.get("criterion_details", {}) if isinstance(ev, dict) else {}

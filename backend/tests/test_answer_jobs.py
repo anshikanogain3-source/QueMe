@@ -41,6 +41,8 @@ class AnswerJobTests(unittest.TestCase):
             "STORAGE_LOCAL_DIR": Path(self.temp_dir.name),
             "FRONTEND_ORIGIN": "http://localhost:5173",
             "OLLAMA_BASE_URL": "http://localhost:11434",
+            "EVALUATION_MODE": "single_provider",
+            "EVALUATION_PROVIDER": "ollama",
         })
         self.app.instance_path = self.temp_dir.name
         self.context = self.app.app_context()
@@ -329,6 +331,33 @@ class AnswerJobTests(unittest.TestCase):
         self.assertEqual(processing_summary(interview)["teacher_review"], 1)
         self.assertEqual(processing_summary(interview)["pending"], 0)
         self.assertIsNone(interview.report.final_score)
+
+    def test_quota_exhaustion_is_terminal_without_worker_retry(self):
+        self._prepare_evaluation_job()
+        self.app.config["EVALUATION_MODE"] = "dual_sequential"
+        storage = type("StorageStub", (), {"get": lambda _self, _key: b"saved audio"})()
+        quota_failure = {
+            "criteria_scores": {}, "content_score": None, "needs_teacher_review": True,
+            "error_category": "quota_exhausted",
+            "dual_model": {
+                "retryable": False,
+                "providers": {
+                    "ollama": {"status": "SUCCESS", "evaluation": {"content_score": 8.0}},
+                    "gemini": {"status": "FAILED", "error_category": "quota_exhausted", "retryable": False},
+                },
+            },
+        }
+        with (
+            patch("queme.services.answer_jobs.get_storage", return_value=storage),
+            patch("queme.services.answer_jobs.evaluate_interview_answer", return_value=quota_failure) as evaluate,
+        ):
+            run_worker(once=True)
+
+        evaluate.assert_called_once()
+        job = db.session.get(AnswerProcessingJob, self.job_id)
+        self.assertEqual(job.status, "NEEDS_REVIEW")
+        self.assertNotEqual(job.status, "RETRY_WAIT")
+        self.assertEqual(job.last_error_code, "evaluation_unavailable")
 
     def test_transient_evaluation_infrastructure_error_remains_retryable(self):
         self._prepare_evaluation_job()

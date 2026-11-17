@@ -19,6 +19,13 @@ _MAX_JSON_ATTEMPTS = 2
 _INVALID_STRUCTURED_RESPONSE = "Local Ollama returned invalid structured content after permitted attempts."
 
 
+class InvalidStructuredResponse(ValueError):
+    def __init__(self, category, attempts):
+        super().__init__(_INVALID_STRUCTURED_RESPONSE)
+        self.category = category
+        self.attempts = attempts
+
+
 def _configured():
     # This checks configuration only. Runtime/model availability is checked against /api/tags.
     return bool(current_app.config.get("OLLAMA_BASE_URL"))
@@ -267,10 +274,11 @@ def _parse_json(text: str):
 
 def _generate_json(
     prompt, *, num_predict=700, validator=None, operation="generation",
-    correlation_id=None, soft_budget_seconds=None,
+    correlation_id=None, soft_budget_seconds=None, return_attempts=False,
 ):
     """Retry a malformed/invalid structured response once, with a repair instruction."""
     started = time.monotonic()
+    last_category = "invalid_json"
     for attempt in range(_MAX_JSON_ATTEMPTS):
         logger.info(
             "Ollama structured response attempt operation=%s correlation_id=%s attempt=%d max_attempts=%d",
@@ -289,8 +297,9 @@ def _generate_json(
         data = _parse_json(content)
         valid = data is not None and (validator is None or validator(data))
         if valid:
-            return data
+            return (data, attempt + 1) if return_attempts else data
         reason = "invalid_json" if data is None else "validation_failed"
+        last_category = "invalid_json" if data is None else "schema_validation"
         logger.warning(
             "Ollama structured response rejected operation=%s correlation_id=%s attempt=%d "
             "reason=%s retrying=%s",
@@ -307,7 +316,7 @@ def _generate_json(
                     operation, correlation_id or "-",
                 )
                 break
-    raise ValueError(_INVALID_STRUCTURED_RESPONSE)
+    raise InvalidStructuredResponse(last_category, attempt + 1)
 
 
 def _evaluation_token_budget(criterion_count):
@@ -324,6 +333,8 @@ def _valid_evaluation_response(value, criterion_names):
     details = value.get("criterion_details")
     if not isinstance(scores, dict) or not isinstance(details, dict):
         return False
+    if set(scores) != set(criterion_names) or set(details) != set(criterion_names):
+        return False
     for name in criterion_names:
         score = scores.get(name)
         detail = details.get(name)
@@ -335,6 +346,9 @@ def _valid_evaluation_response(value, criterion_names):
             or not isinstance(detail.get("explanation"), str)
             or not detail["explanation"].strip()
             or len(detail["explanation"]) > 500
+            or not isinstance(detail.get("evidence_supports_claim"), bool)
+            or not isinstance(detail.get("evidence_explanation"), str)
+            or len(detail["evidence_explanation"]) > 500
             or "evidence" not in detail
         ):
             return False
@@ -342,7 +356,14 @@ def _valid_evaluation_response(value, criterion_names):
         if evidence is not None and not isinstance(evidence, str):
             return False
     return (
-        isinstance(value.get("technical_accuracy"), str) and bool(value["technical_accuracy"].strip())
+        isinstance(value.get("question_relevant"), bool)
+        and isinstance(value.get("relevance_explanation"), str)
+        and bool(value["relevance_explanation"].strip())
+        and value.get("accuracy_category") in {
+            "CORRECT_COMPLETE", "MOSTLY_CORRECT_INCOMPLETE", "PARTIALLY_CORRECT",
+            "INCORRECT_OR_IRRELEVANT", "INSUFFICIENT_EVIDENCE",
+        }
+        and isinstance(value.get("technical_accuracy"), str) and bool(value["technical_accuracy"].strip())
         and isinstance(value.get("missing_concepts"), list)
         and all(isinstance(item, str) for item in value["missing_concepts"])
         and isinstance(value.get("correct_explanation"), str) and bool(value["correct_explanation"].strip())
@@ -354,7 +375,168 @@ def _valid_evaluation_response(value, criterion_names):
         and all(isinstance(item, str) for item in value["weaknesses"])
         and isinstance(value.get("feedback"), str) and bool(value["feedback"].strip())
         and isinstance(value.get("needs_teacher_review"), bool)
+        and isinstance(value.get("incorrect_claims"), list)
+        and all(isinstance(item, str) for item in value["incorrect_claims"])
+        and isinstance(value.get("correct_concepts"), list)
+        and all(isinstance(item, str) for item in value["correct_concepts"])
+        and isinstance(value.get("suggested_improvements"), list)
+        and all(isinstance(item, str) for item in value["suggested_improvements"])
+        and value.get("completeness") in {"COMPLETE", "INCOMPLETE", "SUBSTANTIALLY_INCORRECT"}
     )
+
+
+def _contains_google_error_detail(details, type_name):
+    if isinstance(details, dict):
+        detail_type = details.get("@type")
+        if isinstance(detail_type, str) and detail_type.rsplit(".", 1)[-1] == type_name:
+            return True
+        return any(_contains_google_error_detail(value, type_name) for value in details.values())
+    if isinstance(details, (list, tuple)):
+        return any(_contains_google_error_detail(value, type_name) for value in details)
+    return False
+
+
+def _contains_google_error_reason(details, reasons):
+    if isinstance(details, dict):
+        reason = details.get("reason")
+        if isinstance(reason, str) and reason.casefold().replace("-", "_") in reasons:
+            return True
+        return any(_contains_google_error_reason(value, reasons) for value in details.values())
+    if isinstance(details, (list, tuple)):
+        return any(_contains_google_error_reason(value, reasons) for value in details)
+    return False
+
+
+def _provider_error_category(exc):
+    """Classify provider failures without retaining exception text or secrets."""
+    name = type(exc).__name__.casefold()
+    message = str(getattr(exc, "message", None) or str(exc)).casefold()
+    code = getattr(exc, "code", None)
+    if isinstance(exc, InvalidStructuredResponse):
+        return exc.category
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return "configuration"
+    status_match = re.search(r"http\s+(\d{3})", message)
+    status_code = int(status_match.group(1)) if status_match else None
+    if isinstance(exc, (TimeoutError, socket.timeout)) or "timeout" in name or "timed out" in message:
+        return "timeout"
+    if code in (401, 403) or status_code in (401, 403) or any(term in message for term in ("unauthorized", "permission_denied", "api key", "authentication")):
+        return "authentication"
+
+    details = getattr(exc, "details", None)
+    if (
+        _contains_google_error_detail(details, "QuotaFailure")
+        or _contains_google_error_reason(details, {"quota_exceeded", "daily_quota_exceeded", "project_quota_exceeded"})
+    ):
+        return "quota_exhausted"
+    is_rate_limit = (
+        any(term in message for term in (
+            "rate limit", "rate_limit", "too many requests", "per minute", "per-minute",
+            "per second", "per-second", "retry after", "retry in", "retrydelay",
+        ))
+        or _contains_google_error_detail(details, "RetryInfo")
+        or _contains_google_error_reason(details, {"rate_limit", "rate_limit_exceeded"})
+    )
+    if is_rate_limit:
+        return "rate_limit"
+
+    quota_exhaustion = any(term in message for term in (
+        "quota exceeded", "quota_exceeded", "quota exhausted", "quota_exhausted",
+        "daily quota", "daily limit", "per day", "per-day", "project quota",
+    )) or ("quota" in message and any(term in message for term in ("exceed", "exhaust", "billing")))
+    if quota_exhaustion:
+        return "quota_exhausted"
+
+    if code == 429 or status_code == 429:
+        return "unknown_rate_limit"
+    if status_code is not None and status_code >= 500:
+        return "network"
+    if isinstance(exc, (URLError, ConnectionError, OSError)) or any(term in name for term in ("connection", "network")) or any(term in message for term in ("connection", "network")):
+        return "network"
+    if isinstance(exc, ValueError):
+        if "invalid json" in message:
+            return "invalid_json"
+        if "invalid structured evaluation" in message:
+            return "schema_validation"
+        return "provider_error"
+    return "provider_error"
+
+
+def _failure_is_retryable(category):
+    return category in {"timeout", "rate_limit", "network"}
+
+
+def _generate_gemini_json(prompt, criterion_names):
+    """Generate one structured evaluation. Worker retries are bounded by MAX_ATTEMPTS."""
+    api_key = current_app.config.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("Gemini evaluation is not configured.")
+    from google import genai
+    from google.genai import types
+
+    criterion_names = criterion_names or ["Overall"]
+    criterion_properties = {
+        name: {"type": "OBJECT", "properties": {
+            "applicable": {"type": "BOOLEAN"},
+            "explanation": {"type": "STRING"},
+            "evidence": {"type": ["STRING", "NULL"]},
+            "evidence_supports_claim": {"type": "BOOLEAN"},
+            "evidence_explanation": {"type": "STRING"},
+        }, "required": ["applicable", "explanation", "evidence", "evidence_supports_claim", "evidence_explanation"]}
+        for name in criterion_names
+    }
+    schema = {
+        "type": "OBJECT",
+        "properties": {
+            "criteria_scores": {"type": "OBJECT", "properties": {name: {"type": "NUMBER"} for name in criterion_names}},
+            "criterion_details": {"type": "OBJECT", "properties": criterion_properties},
+            "question_relevant": {"type": "BOOLEAN"},
+            "relevance_explanation": {"type": "STRING"},
+            "accuracy_category": {"type": "STRING", "enum": ["CORRECT_COMPLETE", "MOSTLY_CORRECT_INCOMPLETE", "PARTIALLY_CORRECT", "INCORRECT_OR_IRRELEVANT", "INSUFFICIENT_EVIDENCE"]},
+            "technical_accuracy": {"type": "STRING"}, "missing_concepts": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "correct_explanation": {"type": "STRING"}, "strengths": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "weaknesses": {"type": "ARRAY", "items": {"type": "STRING"}}, "feedback": {"type": "STRING"},
+            "needs_teacher_review": {"type": "BOOLEAN"},
+            "incorrect_claims": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "correct_concepts": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "suggested_improvements": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "completeness": {"type": "STRING", "enum": ["COMPLETE", "INCOMPLETE", "SUBSTANTIALLY_INCORRECT"]},
+        },
+        "required": ["criteria_scores", "criterion_details", "question_relevant", "relevance_explanation", "accuracy_category", "technical_accuracy", "missing_concepts", "correct_explanation", "strengths", "weaknesses", "feedback", "needs_teacher_review", "incorrect_claims", "correct_concepts", "suggested_improvements", "completeness"],
+    }
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=int(current_app.config.get("GEMINI_EVALUATION_TIMEOUT", 30)) * 1000,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
+    try:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=current_app.config.get("GEMINI_EVALUATION_MODEL") or "gemini-3.5-flash-lite",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.1),
+                )
+                data = _parse_json(response.text)
+                if data is None:
+                    raise ValueError("Gemini returned invalid JSON.")
+                return data, attempt + 1
+            except Exception as exc:
+                category = _provider_error_category(exc)
+                retryable = _failure_is_retryable(category)
+                logger.warning(
+                    "Evaluation provider request failed provider=gemini model=%s attempt=%d "
+                    "error_category=%s retryable=%s",
+                    current_app.config.get("GEMINI_EVALUATION_MODEL") or "gemini-3.5-flash-lite",
+                    attempt + 1, category, retryable,
+                )
+                if attempt == 1 or not retryable:
+                    raise
+                time.sleep(1)
+    finally:
+        client.close()
 
 
 def _duration_ms(value):
@@ -407,21 +589,37 @@ def generate_questions(topic: str, question_type: str, difficulty: str, count: i
         return {"available": False, "questions": [], "error": _error_message(exc)}
 
 
-def evaluate_answer(payload: dict, *, correlation_id=None):
+def _evaluate_answer_single(payload: dict, *, correlation_id=None, provider_override=None):
+    provider_attempts = 0
     fallback = {
         "criteria_scores": {}, "strengths": [],
         "weaknesses": ["Automatic evaluation is unavailable."],
-        "feedback": "Teacher review is recommended because local AI evaluation is unavailable.",
+        "feedback": "Teacher review is recommended because automatic evaluation is unavailable.",
         "needs_teacher_review": True, "content_score": None,
+        "evaluation_status": "UNAVAILABLE", "accuracy_category": "INSUFFICIENT_EVIDENCE",
+        "question_relevant": False, "relevance_explanation": "Relevance could not be assessed.",
     }
-    if not _configured():
+    provider = provider_override or current_app.config.get("EVALUATION_PROVIDER", "ollama")
+    model = (
+        current_app.config.get("GEMINI_EVALUATION_MODEL") or "gemini-3.5-flash-lite"
+        if provider == "gemini" else current_app.config.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+    )
+    if provider == "ollama" and not _configured():
+        logger.warning("Answer evaluation unavailable provider=ollama model=%s error_category=configuration", current_app.config.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL)
         fallback["error"] = "Local Ollama is not configured."
+        fallback["error_category"] = "configuration"
+        return fallback
+    if provider == "gemini" and not current_app.config.get("GEMINI_API_KEY"):
+        logger.warning("Answer evaluation unavailable provider=gemini model=%s error_category=configuration", current_app.config.get("GEMINI_EVALUATION_MODEL") or "gemini-3.5-flash-lite")
+        fallback["error"] = "Gemini evaluation is not configured."
+        fallback["error_category"] = "configuration"
         return fallback
     rubric = payload.get("rubric") or {}
     criteria = rubric.get("criteria", []) if isinstance(rubric, dict) else []
     criteria = [item for item in criteria if isinstance(item, (str, dict))]
     criterion_names = [item if isinstance(item, str) else item.get("name") for item in criteria]
     criterion_names = [name for name in criterion_names if isinstance(name, str) and name.strip()]
+    validation_names = criterion_names or ["Overall"]
     criterion_weights = {}
     for item in criteria:
         if isinstance(item, dict):
@@ -437,17 +635,21 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
     transcript = str(payload.get("transcript") or "").strip()
     if not transcript:
         fallback["error"] = "No usable transcript was available for evaluation."
+        fallback["error_category"] = "invalid_input"
         return fallback
     no_answer = transcript.casefold().strip(" .,!\t\n") in {"i don't know", "i do not know", "don't know", "do not know", "no idea"}
-    if no_answer:
+    if no_answer and provider_override is None:
         names = criterion_names or ["Answer" ]
         return {
             "criteria_scores": {name: 0.0 for name in names},
-            "criterion_details": {name: {"applicable": True, "explanation": "No answer provided.", "evidence": None} for name in names},
+            "criterion_details": {name: {"applicable": True, "explanation": "No answer provided.", "evidence": None, "evidence_explanation": ""} for name in names},
             "criteria_weights": criterion_weights or {name: 100.0 / len(names) for name in names},
             "content_score": 0.0, "strengths": [], "weaknesses": ["No answer was provided."],
             "missing_concepts": [], "correct_explanation": "Review the question's expected answer and try again.",
             "technical_accuracy": "Not answered", "feedback": "No answer was provided. Review the question and try again.", "needs_teacher_review": False,
+            "question_relevant": False, "relevance_explanation": "No substantive answer was provided.",
+            "accuracy_category": "INCORRECT_OR_IRRELEVANT",
+            "_provider_attempt_count": 0,
         }
 
     # Rubric is supplied once. Delivery metrics remain in persisted analytics and
@@ -458,52 +660,82 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
     }
     prompt = (
         "Evaluate the candidate answer against the question, reference answer and every rubric criterion. "
+        "When no rubric criteria are supplied, score one criterion named Overall. First identify the question's central intent and answer it directly; "
+        "topic similarity alone is not relevance. Identify incorrect claims, contradictions, correct concepts, and important omissions. "
+        "For each criterion, provide an exact transcript excerpt, "
+        "evidence_supports_claim (boolean), and evidence_explanation stating why that excerpt supports the criterion score. "
+        "Set evidence_supports_claim false if the excerpt is missing, unrelated, or merely shares a keyword. "
+        "A transcript substring match proves only that the words were spoken, not that the claim is true or relevant. "
+        "First decide question_relevant based on meaning, not keyword overlap, and provide relevance_explanation. If false, all content scores must be zero, "
+        "accuracy_category must be INCORRECT_OR_IRRELEVANT, strengths must be empty, and feedback must not praise accuracy. "
+        "Set accuracy_category to CORRECT_COMPLETE, MOSTLY_CORRECT_INCOMPLETE, PARTIALLY_CORRECT, "
+        "INCORRECT_OR_IRRELEVANT, or INSUFFICIENT_EVIDENCE. Every positive claim needs exact transcript evidence that "
+        "supports that claim; evidence that is merely present but unrelated does not support it. "
         "Score only demonstrated correctness, from 0 to 10. Return complete JSON with criteria_scores containing "
         "a score for every criterion and criterion_details containing every criterion with applicable (boolean), "
         "a concise non-empty explanation (at most 2 sentences), and evidence (an exact transcript excerpt or null). "
         "Also return technical_accuracy (brief string), missing_concepts (string array), correct_explanation (brief string), "
         "strengths and weaknesses (arrays of at most 2 concise strings each), feedback (brief string), and "
+        "incorrect_claims, correct_concepts, and suggested_improvements (string arrays), completeness "
+        "(COMPLETE, INCOMPLETE, or SUBSTANTIALLY_INCORRECT), "
         "needs_teacher_review (boolean). Never invent or rewrite evidence. Keep JSON complete; do not omit criteria or fields.\n"
-        f"Rubric: {json.dumps(criteria, ensure_ascii=False, separators=(',', ':'))}\n"
+        f"Rubric: {json.dumps(criteria or [{'name': 'Overall', 'weight': 100}], ensure_ascii=False, separators=(',', ':'))}\n"
         f"Evaluation input: {json.dumps(evaluation_input, ensure_ascii=False, separators=(',', ':'))}"
     )
     evaluation_started = time.monotonic()
     token_budget = _evaluation_token_budget(len(criterion_names))
     soft_budget = int(current_app.config.get("OLLAMA_EVALUATION_BUDGET_SECONDS", 600))
     logger.info(
-        "Answer evaluation started correlation_id=%s model=%s criteria=%d output_token_budget=%d soft_budget_s=%d",
+        "Answer evaluation started correlation_id=%s provider=%s model=%s criteria=%d output_token_budget=%d soft_budget_s=%d",
         correlation_id or "-",
-        current_app.config.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
+        provider, model,
         len(criterion_names),
         token_budget,
         soft_budget,
     )
     try:
-        data = _generate_json(
-            prompt,
-            num_predict=token_budget,
-            validator=lambda value: _valid_evaluation_response(value, criterion_names),
-            operation="answer_evaluation",
-            correlation_id=correlation_id,
-            soft_budget_seconds=soft_budget,
-        )
+        if provider == "gemini":
+            generated = _generate_gemini_json(prompt, validation_names)
+            data, provider_attempts = generated if isinstance(generated, tuple) else (generated, 1)
+            if not _valid_evaluation_response(data, validation_names):
+                raise ValueError("Gemini returned invalid structured evaluation.")
+        else:
+            data, provider_attempts = _generate_json(
+                prompt, num_predict=token_budget,
+                validator=lambda value: _valid_evaluation_response(value, validation_names),
+                operation="answer_evaluation", correlation_id=correlation_id,
+                soft_budget_seconds=soft_budget,
+                return_attempts=True,
+            )
         scores = data.get("criteria_scores", data.get("criterion_scores", {}))
         details = data.get("criterion_details", {})
         clean_scores, clean_details = {}, {}
         evidence_unavailable = False
-        for name in criterion_names:
+        for name in validation_names:
             detail = details.get(name, {})
             applicable = detail.get("applicable", True) is not False
             explanation = detail.get("explanation", "")
             evidence = detail.get("evidence")
+            evidence_explanation = detail.get("evidence_explanation", "")
             validated_evidence = None
             if isinstance(evidence, str) and evidence.strip() and len(evidence.strip()) <= 240:
                 index = transcript.casefold().find(evidence.strip().casefold())
                 if index >= 0:
                     validated_evidence = transcript[index:index + len(evidence.strip())]
-            if applicable and validated_evidence is None:
+            score_value = scores.get(name)
+            positive_score = isinstance(score_value, (int, float)) and not isinstance(score_value, bool) and score_value > 0
+            evidence_supports_claim = detail.get("evidence_supports_claim") is True
+            if applicable and positive_score and (
+                validated_evidence is None or not evidence_explanation.strip() or not evidence_supports_claim
+            ):
                 evidence_unavailable = True
-            clean_details[name] = {"applicable": applicable, "explanation": explanation.strip(), "evidence": validated_evidence}
+            clean_details[name] = {
+                "applicable": applicable,
+                "explanation": explanation.strip(),
+                "evidence": validated_evidence,
+                "evidence_supports_claim": evidence_supports_claim,
+                "evidence_explanation": evidence_explanation.strip() if validated_evidence else "",
+            }
             if applicable:
                 try:
                     value = float(scores[name])
@@ -512,47 +744,174 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
                 if math.isfinite(value) and 0 <= value <= 10:
                     clean_scores[name] = round(value, 2)
         applicable_count = sum(item["applicable"] for item in clean_details.values())
-        if not criterion_names:
-            # Preserve support for interviews whose rubric has no criteria.
-            scores_values = [float(value) for value in scores.values() if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 10]
-            if scores_values:
-                clean_scores["Overall"] = round(sum(scores_values) / len(scores_values), 2)
-                criterion_weights = {"Overall": 100.0}
+        semantic_review_required = any(score > 0 for score in clean_scores.values())
+        if not criterion_names and "Overall" in clean_scores:
+            criterion_weights = {"Overall": 100.0}
         applicable_weight = sum(criterion_weights.get(name, 0) for name in clean_scores)
         content_score = round(sum(score * criterion_weights.get(name, 0) for name, score in clean_scores.items()) / applicable_weight, 2) if applicable_weight else None
+        category = data["accuracy_category"]
+        question_relevant = data["question_relevant"]
+        category_conflict = bool(
+            content_score is not None and content_score > 0
+            and category == "INCORRECT_OR_IRRELEVANT"
+        )
+        if data.get("completeness") == "SUBSTANTIALLY_INCORRECT" and content_score is not None and content_score > 0:
+            clean_scores = {name: 0.0 for name in clean_scores}
+            content_score = 0.0 if clean_scores else None
+            category = "INCORRECT_OR_IRRELEVANT"
+            category_conflict = True
+        if not question_relevant or category == "INCORRECT_OR_IRRELEVANT":
+            clean_scores = {name: 0.0 for name in clean_scores}
+            content_score = 0.0 if clean_scores else None
+            category = "INCORRECT_OR_IRRELEVANT"
+        elif category == "INSUFFICIENT_EVIDENCE" or evidence_unavailable or content_score is None:
+            content_score = None
+            category = "INSUFFICIENT_EVIDENCE"
+        if content_score is not None:
+            score_category = (
+                "CORRECT_COMPLETE" if content_score >= 9 else
+                "MOSTLY_CORRECT_INCOMPLETE" if content_score >= 7 else
+                "PARTIALLY_CORRECT" if content_score >= 3 else
+                "INCORRECT_OR_IRRELEVANT"
+            )
+            category_conflict = category_conflict or category != score_category
+            category = score_category
         strengths, weaknesses = data.get("strengths", []), data.get("weaknesses", [])
         clean_strings = lambda values: [item.strip()[:300] for item in values if isinstance(item, str) and item.strip()] if isinstance(values, list) else []
+        if not question_relevant or category in ("INCORRECT_OR_IRRELEVANT", "INSUFFICIENT_EVIDENCE"):
+            strengths = []
         feedback = data.get("feedback")
         correct_explanation = data.get("correct_explanation")
         technical_accuracy = data.get("technical_accuracy")
+        if not question_relevant:
+            clean_details = {
+                name: {
+                    "applicable": detail["applicable"],
+                    "explanation": "No relevant technical claim was demonstrated for this question.",
+                    "evidence": None,
+                    "evidence_supports_claim": False,
+                    "evidence_explanation": "",
+                }
+                for name, detail in clean_details.items()
+            }
+            weaknesses = ["The answer does not address the question."]
+            feedback = "The response does not address the question. Teacher review is recommended."
+            correct_explanation = "The response did not demonstrate the requested concept."
+            technical_accuracy = "Incorrect or irrelevant to the question."
+        elif category == "INCORRECT_OR_IRRELEVANT":
+            clean_details = {
+                name: {
+                    "applicable": detail["applicable"],
+                    "explanation": "The response did not demonstrate correct technical content.",
+                    "evidence": None,
+                    "evidence_supports_claim": False,
+                    "evidence_explanation": "",
+                }
+                for name, detail in clean_details.items()
+            }
+            weaknesses = ["The answer does not demonstrate correct technical content."]
+            feedback = "The answer does not demonstrate correct technical content. Teacher review is recommended."
+            correct_explanation = "The response did not demonstrate the requested concept."
+            technical_accuracy = "Incorrect."
+        elif category == "INSUFFICIENT_EVIDENCE":
+            clean_scores = {}
+            clean_details = {
+                name: {
+                    "applicable": True,
+                    "explanation": "Insufficient transcript evidence to evaluate this claim.",
+                    "evidence": None,
+                    "evidence_supports_claim": False,
+                    "evidence_explanation": "",
+                }
+                for name in validation_names
+            }
+            strengths = []
+            weaknesses = ["The transcript does not contain verifiable supporting evidence."]
+            correct_explanation = "No answer explanation is shown because supporting evidence could not be verified."
+            technical_accuracy = "Insufficient evidence to assess technical accuracy."
+            missing_concepts = []
+            feedback = "The transcript does not provide enough relevant evidence to score this answer. Teacher review is recommended."
         result = {
             **data, "criteria_scores": clean_scores, "criteria_weights": criterion_weights,
             "criterion_details": clean_details, "content_score": content_score,
+            "evaluation_status": "COMPLETED" if content_score is not None else "UNAVAILABLE",
+            "accuracy_category": category, "question_relevant": question_relevant,
             "strengths": clean_strings(strengths), "weaknesses": clean_strings(weaknesses),
-            "missing_concepts": clean_strings(data.get("missing_concepts", [])),
+            "missing_concepts": clean_strings(missing_concepts if category == "INSUFFICIENT_EVIDENCE" else data.get("missing_concepts", [])),
             "correct_explanation": correct_explanation.strip()[:1200] if isinstance(correct_explanation, str) else "",
             "technical_accuracy": technical_accuracy.strip()[:300] if isinstance(technical_accuracy, str) else "",
             "feedback": feedback.strip()[:1000] if isinstance(feedback, str) else "",
-            "needs_teacher_review": bool(data.get("needs_teacher_review", False)) or evidence_unavailable or not applicable_count and bool(criterion_names) or bool(applicable_count and len(clean_scores) != applicable_count) or content_score is None,
+            "needs_teacher_review": bool(data.get("needs_teacher_review", False)) or semantic_review_required or category_conflict or not question_relevant or category == "INSUFFICIENT_EVIDENCE" or evidence_unavailable or not applicable_count and bool(criterion_names) or bool(applicable_count and len(clean_scores) != applicable_count) or content_score is None,
         }
+        if no_answer:
+            result.update({
+                "criteria_scores": {name: 0.0 for name in validation_names},
+                "criterion_details": {name: {
+                    "applicable": True, "explanation": "No answer provided.", "evidence": None,
+                    "evidence_supports_claim": False, "evidence_explanation": "",
+                } for name in validation_names},
+                "content_score": 0.0,
+                "evaluation_status": "COMPLETED",
+                "accuracy_category": "INCORRECT_OR_IRRELEVANT",
+                "question_relevant": False,
+                "relevance_explanation": "No substantive answer was provided.",
+                "feedback": "No answer was provided. Review the question and try again.",
+                "needs_teacher_review": False,
+            })
         if evidence_unavailable:
             result["review_reason"] = "evidence_unavailable"
+        elif semantic_review_required:
+            result["review_reason"] = "semantic_support_requires_teacher_review"
         logger.info(
             "Answer evaluation completed correlation_id=%s duration_ms=%d outcome=%s",
             correlation_id or "-",
             int((time.monotonic() - evaluation_started) * 1000),
             "scored" if content_score is not None else "unavailable",
         )
+        result["_provider_attempt_count"] = provider_attempts
         return result
     except Exception as exc:
         logger.warning(
-            "AI answer evaluation failed correlation_id=%s duration_ms=%d error_type=%s",
+            "AI answer evaluation failed correlation_id=%s provider=%s model=%s duration_ms=%d error_category=%s",
             correlation_id or "-",
+            provider, model,
             int((time.monotonic() - evaluation_started) * 1000),
-            type(exc).__name__,
+            _provider_error_category(exc),
         )
-        fallback["error"] = _error_message(exc)
+        category = _provider_error_category(exc)
+        fallback["error"] = (
+            "Evaluation provider request timed out; teacher review is required."
+            if category == "timeout" else
+            "Evaluation provider returned invalid structured content after permitted attempts."
+            if category in {"invalid_json", "schema_validation", "invalid_response"} else
+            "Evaluation provider failed; teacher review is required."
+        )
+        fallback["error_category"] = category
+        fallback["retryable"] = _failure_is_retryable(category)
+        fallback["_provider_attempt_count"] = int(getattr(exc, "attempts", provider_attempts))
         return fallback
+
+
+def evaluate_answer(payload: dict, *, correlation_id=None, provider_override=None):
+    """Evaluate with one explicitly selected provider; dual orchestration lives above this adapter."""
+    provider = provider_override or current_app.config.get("EVALUATION_PROVIDER", "ollama")
+    model = (
+        current_app.config.get("GEMINI_EVALUATION_MODEL") or "gemini-3.5-flash-lite"
+        if provider == "gemini" else current_app.config.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL
+    )
+    started = time.monotonic()
+    result = _evaluate_answer_single(payload, correlation_id=correlation_id, provider_override=provider_override)
+    actual_attempt_count = result.get("_provider_attempt_count")
+    result["provider_attempt"] = {
+        "provider": provider,
+        "model": model,
+        "status": "FAILED" if result.get("error") else "SKIPPED" if actual_attempt_count == 0 else "SUCCESS",
+        "duration_ms": int((time.monotonic() - started) * 1000),
+        "attempt_count": result.pop("_provider_attempt_count", 0 if actual_attempt_count == 0 or not payload.get("transcript") else (2 if result.get("retryable") else 1)),
+        "error_category": result.get("error_category"),
+        "retryable": bool(result.get("retryable", False)),
+    }
+    return result
 
 
 def generate_followup(question_text: str, transcript: str, topic_hint: str = ""):

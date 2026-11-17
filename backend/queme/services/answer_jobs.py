@@ -80,7 +80,12 @@ def worker_health():
     stale_after = max(
         WORKER_HEARTBEAT_STALE_SECONDS,
         float(payload.get("poll_seconds", 1)) * 3,
-        float(current_app.config.get("OLLAMA_TIMEOUT", 300)) + 30
+        max(
+            float(current_app.config.get("OLLAMA_TIMEOUT", 300)) + 30,
+            float(current_app.config.get("DUAL_EVALUATION_BUDGET_SECONDS", 750)) + 30
+            if current_app.config.get("EVALUATION_MODE", "dual_sequential") == "dual_sequential"
+            else 0,
+        )
         if state == "processing" else WORKER_HEARTBEAT_STALE_SECONDS,
     )
     if heartbeat_age > stale_after:
@@ -358,7 +363,10 @@ def process_job(job_id):
             db.session.commit()
 
         evaluation_started = time.monotonic()
-        evaluation_budget = int(current_app.config.get("OLLAMA_EVALUATION_BUDGET_SECONDS", 600))
+        evaluation_budget = int(current_app.config.get(
+            "DUAL_EVALUATION_BUDGET_SECONDS", 750
+        ) if current_app.config.get("EVALUATION_MODE", "dual_sequential") == "dual_sequential"
+            else current_app.config.get("OLLAMA_EVALUATION_BUDGET_SECONDS", 600))
         evaluation = evaluate_interview_answer(
             job.question,
             correlation_id=f"answer_job:{job.job_id}",
@@ -366,7 +374,17 @@ def process_job(job_id):
         evaluation_elapsed = time.monotonic() - evaluation_started
         score = job.question.content_score
         evaluation_error = str(evaluation.get("error") or "")
-        if evaluation_error.startswith("Local Ollama returned invalid structured content"):
+        dual_state = evaluation.get("dual_model") if isinstance(evaluation.get("dual_model"), dict) else {}
+        if dual_state.get("retryable") or evaluation.get("retryable"):
+            budget_exceeded = evaluation_elapsed >= evaluation_budget
+            _retry_or_review(
+                job,
+                "evaluation_budget_exceeded" if budget_exceeded else "provider_transient_failure",
+                "The sequential evaluation exceeded its processing budget and requires teacher review."
+                if budget_exceeded else "A temporary AI evaluation service failure requires a bounded retry.",
+                retryable=not budget_exceeded,
+            )
+        elif evaluation.get("error_category") in ("invalid_response", "invalid_json", "schema_validation") or evaluation_error.startswith("Local Ollama returned invalid structured content"):
             _retry_or_review(
                 job,
                 "invalid_evaluation_output",

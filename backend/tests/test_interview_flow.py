@@ -39,6 +39,8 @@ class InterviewFlowTests(unittest.TestCase):
             "STORAGE_BACKEND": "local",
             "STORAGE_LOCAL_DIR": Path(self.storage_dir.name),
             "OLLAMA_BASE_URL": "",
+            "EVALUATION_MODE": "single_provider",
+            "EVALUATION_PROVIDER": "ollama",
         })
         self.ctx = self.app.app_context()
         self.ctx.push()
@@ -425,15 +427,18 @@ class InterviewFlowTests(unittest.TestCase):
         ]})[1])
 
         response = {
-            "criteria_scores": {"Correctness": 10, "Structure": 0},
+            "question_relevant": True, "relevance_explanation": "It describes the requested SQL concept.", "accuracy_category": "PARTIALLY_CORRECT",
+            "criteria_scores": {"Correctness": 10, "Structure": 6},
             "criterion_details": {
-                "Correctness": {"applicable": True, "explanation": "Defined SQL accurately.", "evidence": "SQL manages data"},
-                "Structure": {"applicable": True, "explanation": "No sequence was stated.", "evidence": "invented quote"},
+                "Correctness": {"applicable": True, "explanation": "Defined SQL accurately.", "evidence": "SQL manages data", "evidence_supports_claim": True, "evidence_explanation": "It describes SQL's role."},
+                "Structure": {"applicable": True, "explanation": "No sequence was stated.", "evidence": "invented quote", "evidence_supports_claim": False, "evidence_explanation": "No sequence appears."},
             },
             "technical_accuracy": "Partially accurate.", "missing_concepts": [],
             "correct_explanation": "A useful answer explains the concept clearly.",
             "strengths": [], "weaknesses": [], "feedback": "Keep practising.",
             "needs_teacher_review": False,
+            "incorrect_claims": [], "correct_concepts": ["SQL"],
+            "suggested_improvements": ["Explain the concept more fully."], "completeness": "INCOMPLETE",
         }
         with patch("queme.services.llm._configured", return_value=True), patch(
             "queme.services.llm._generate", return_value=json.dumps(response)
@@ -442,9 +447,9 @@ class InterviewFlowTests(unittest.TestCase):
                 "transcript": "SQL manages data",
                 "rubric": {"criteria": [{"name": "Correctness", "weight": 80}, {"name": "Structure", "weight": 20}]},
             })
-        self.assertEqual(evaluated["content_score"], 8.0)
+        self.assertIsNone(evaluated["content_score"])
         self.assertEqual(evaluated["criteria_weights"], {"Correctness": 80.0, "Structure": 20.0})
-        self.assertEqual(evaluated["criterion_details"]["Correctness"]["evidence"], "SQL manages data")
+        self.assertIsNone(evaluated["criterion_details"]["Correctness"]["evidence"])
         self.assertIsNone(evaluated["criterion_details"]["Structure"]["evidence"])
         self.assertTrue(evaluated["needs_teacher_review"])
 
@@ -586,7 +591,7 @@ class InterviewFlowTests(unittest.TestCase):
         db.session.flush()
         captured = {}
 
-        def fake_evaluate(payload):
+        def fake_evaluate(payload, **_kwargs):
             captured.update(payload)
             return {"criteria_scores": {}, "content_score": None, "needs_teacher_review": True}
 

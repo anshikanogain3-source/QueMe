@@ -78,7 +78,7 @@ def _report_payload(interview, report):
         "teacher_name": interview.teacher.full_name if interview.teacher else None,
         "template_title": interview.template.title if interview.template else None,
         "score_weights": {"content_weight": content_weight, "delivery_weight": delivery_weight},
-        "score_method": "Question final AI score = content score × content weight + delivery score × delivery weight; both component scores use a 0–10 scale.",
+        "score_method": "Content accuracy is scored separately from delivery. For most answers, final AI score is the weighted content and delivery score; incorrect or irrelevant answers use the content score alone. Teacher scores and overrides are reported separately and take precedence for the final reviewed score.",
         "answer_processing": processing_summary(interview),
         **analytics,
         "questions": [
@@ -358,7 +358,12 @@ def excel_report(interview_id):
             "teacher_score": float(q.teacher_score) if q.teacher_score is not None else "",
             "teacher_remark": q.teacher_remark or "",
             "needs_review": bool(q.needs_review),
-            "feedback": (q.evaluation_json or {}).get("feedback", "") if isinstance(q.evaluation_json, dict) else "",
+            "feedback": (q.evaluation_json or {}).get("feedback", "") if isinstance(q.evaluation_json, dict) and (q.evaluation_json or {}).get("evaluation_status") != "UNAVAILABLE" and ((q.evaluation_json or {}).get("provider_attempt", {}).get("status") == "SUCCESS" or (q.evaluation_json or {}).get("content_score") is not None) else "",
+            "ollama_status": ((q.evaluation_json or {}).get("dual_model", {}).get("providers", {}).get("ollama", {}) or {}).get("status", "") if isinstance(q.evaluation_json, dict) else "",
+            "ollama_model_and_result": json.dumps(((q.evaluation_json or {}).get("dual_model", {}).get("providers", {}).get("ollama", {}) or {}).get("evaluation", {}), ensure_ascii=False) if isinstance(q.evaluation_json, dict) else "",
+            "gemini_status": ((q.evaluation_json or {}).get("dual_model", {}).get("providers", {}).get("gemini", {}) or {}).get("status", "") if isinstance(q.evaluation_json, dict) else "",
+            "gemini_model_and_result": json.dumps(((q.evaluation_json or {}).get("dual_model", {}).get("providers", {}).get("gemini", {}) or {}).get("evaluation", {}), ensure_ascii=False) if isinstance(q.evaluation_json, dict) else "",
+            "dual_comparison": json.dumps((q.evaluation_json or {}).get("dual_model", {}).get("comparison", {}), ensure_ascii=False) if isinstance(q.evaluation_json, dict) else "",
             "rubric_breakdown": json.dumps((q.evaluation_json or {}).get("criteria_scores", {}), ensure_ascii=False)
             if isinstance(q.evaluation_json, dict) else "",
             "criterion_feedback_and_evidence": json.dumps((q.evaluation_json or {}).get("criterion_details", {}), ensure_ascii=False)

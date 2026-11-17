@@ -47,6 +47,12 @@ class Config:
 
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b").strip()
+    EVALUATION_MODE = os.getenv("EVALUATION_MODE", "dual_sequential").strip().lower()
+    EVALUATION_PROVIDER = os.getenv("EVALUATION_PROVIDER", "ollama").strip().lower()
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_EVALUATION_MODEL = os.getenv("GEMINI_EVALUATION_MODEL", "gemini-3.5-flash-lite").strip()
+    GEMINI_EVALUATION_TIMEOUT = _positive_int_env("GEMINI_EVALUATION_TIMEOUT", "30")
+    DUAL_EVALUATION_BUDGET_SECONDS = _positive_int_env("DUAL_EVALUATION_BUDGET_SECONDS", "750")
     OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip()
     OLLAMA_TIMEOUT = _positive_int_env("OLLAMA_TIMEOUT", "300")
     OLLAMA_LOCK_WAIT_TIMEOUT = _positive_int_env("OLLAMA_LOCK_WAIT_TIMEOUT", "30")
@@ -117,6 +123,20 @@ def validate_config(app):
 
     if app.config.get("STORAGE_BACKEND") not in ("local", "r2", "s3"):
         raise RuntimeError("STORAGE_BACKEND must be 'local', 'r2', or 's3'.")
+    provider = str(app.config.get("EVALUATION_PROVIDER", "ollama")).strip().lower()
+    if provider not in ("ollama", "gemini"):
+        raise RuntimeError("EVALUATION_PROVIDER must be 'ollama' or 'gemini'.")
+    app.config["EVALUATION_PROVIDER"] = provider
+    mode = str(app.config.get("EVALUATION_MODE", "dual_sequential")).strip().lower()
+    if mode not in ("dual_sequential", "single_provider"):
+        raise RuntimeError("EVALUATION_MODE must be 'dual_sequential' or 'single_provider'.")
+    app.config["EVALUATION_MODE"] = mode
+    try:
+        app.config["DUAL_EVALUATION_BUDGET_SECONDS"] = int(app.config.get("DUAL_EVALUATION_BUDGET_SECONDS", 750))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("DUAL_EVALUATION_BUDGET_SECONDS must be a positive integer.") from exc
+    if app.config["DUAL_EVALUATION_BUDGET_SECONDS"] <= 0:
+        raise RuntimeError("DUAL_EVALUATION_BUDGET_SECONDS must be a positive integer.")
     app.config.setdefault("OLLAMA_EVALUATION_BUDGET_SECONDS", 600)
     app.config.setdefault("OLLAMA_LOCK_WAIT_TIMEOUT", 30)
     app.config.setdefault("OLLAMA_EVALUATION_MIN_TOKENS", 700)
@@ -132,6 +152,14 @@ def validate_config(app):
             raise RuntimeError(f"{setting} must be a positive integer.") from exc
         if app.config[setting] <= 0:
             raise RuntimeError(f"{setting} must be a positive integer.")
+    minimum_dual_budget = (
+        2 * (int(app.config.get("OLLAMA_TIMEOUT", 300)) + app.config["OLLAMA_LOCK_WAIT_TIMEOUT"])
+        + 2 * int(app.config.get("GEMINI_EVALUATION_TIMEOUT", 30)) + 10
+    )
+    if mode == "dual_sequential" and app.config["DUAL_EVALUATION_BUDGET_SECONDS"] < minimum_dual_budget:
+        raise RuntimeError(
+            "DUAL_EVALUATION_BUDGET_SECONDS must cover two Ollama requests, lock waits, and two Gemini requests."
+        )
     if app.config["OLLAMA_EVALUATION_MAX_TOKENS"] < app.config["OLLAMA_EVALUATION_MIN_TOKENS"]:
         raise RuntimeError("OLLAMA_EVALUATION_MAX_TOKENS must be at least OLLAMA_EVALUATION_MIN_TOKENS.")
     if app.config["OLLAMA_EVALUATION_MAX_TOKENS"] > app.config["OLLAMA_NUM_CTX"]:

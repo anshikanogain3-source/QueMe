@@ -21,7 +21,7 @@ The system has three roles:
 - **Database:** Local SQLite file by default (`backend/queme.db` in the active local setup); PostgreSQL remains supported when explicitly configured. The interview flow tests use in-memory SQLite.
 - **Authentication:** Bearer tokens, with password hashing and role checks in the backend.
 - **Audio:** Browser `MediaRecorder` for capture and browser speech synthesis for spoken questions. Backend transcription uses `faster-whisper`; audio measurements are calculated by the audio-analysis service.
-- **AI:** Local Ollama chat inference with Qwen 3 1.7B for question drafting, answer evaluation, and follow-up generation. Interview intelligence is not sent to a cloud LLM.
+- **AI:** Local Ollama chat inference with Qwen 3 1.7B for question drafting and follow-up generation. Usable answer transcripts are evaluated sequentially and independently by Ollama and Google Gemini (`gemini-3.5-flash-lite`) by default; the backend compares their structured results and sends incomplete or disputed evaluations for teacher review. Gemini receives the question, transcript, expected answer concepts, reference answer, and rubric, but no audio, camera images, or student name. Review Google's data-use terms before enabling transcript processing.
 - **Audio storage:** The active local configuration targets AWS S3; local filesystem and Cloudflare R2 adapters remain available. Audio object keys are saved with interview answers in the configured database so reports can retrieve the recording through the authenticated backend.
 - **Optional services:** SMTP password reset emails.
 
@@ -85,7 +85,7 @@ Here, **static** means content or behavior defined in the frontend source and sh
 | Interview room | Consent wording, controls, layout, and supported session actions. | Interview/session status, current question, progress, recording duration, transcript, recording, upload result, analysis, and report state. Speech and camera states also depend on browser support and permission. |
 | Reports | Report sections, chart/summary presentation, and review form. | Scores, analysis coverage, topic analysis, improvement plan, transcripts, teacher comments, score overrides, and export contents. |
 | Admin | Account/report/settings page structure and available operations. | Accounts, class groups, settings, analytics, and report rows from the database. |
-| Backend behavior | Route definitions, validation rules, scoring/report logic, authorization rules, and local Ollama adapter. | Database records and configured runtime values; local Ollama and faster-whisper availability, SMTP, and local/S3/R2 storage. |
+| Backend behavior | Route definitions, validation rules, scoring/report logic, authorization rules, and Ollama/Gemini adapters plus deterministic comparison. | Database records and configured runtime values; local Ollama, Gemini API, faster-whisper, SMTP, and local/S3/R2 storage. |
 
 The frontend does not contain interview assignments or user records as a fixed dataset. Those are fetched from the API. Browser speech synthesis and microphone/camera capture are client-side browser features; server-side analysis and persistence happen after an audio upload.
 
@@ -116,8 +116,8 @@ Password reset uses a short-lived token delivered by SMTP when mail configuratio
 2. Before a scheduled interview starts, the student explicitly consents to audio recording. The browser checks microphone permission, then the API records consent and starts the interview.
 3. The student starts the interview, listens to the spoken question if speech synthesis is supported, and records an answer with `MediaRecorder`.
 4. The student can listen back, re-record, submit, skip the question, or finish the interview. The UI prevents duplicate starts/submissions while those operations are pending.
-5. On submission, the backend validates ownership and the assigned current question, stores the recording under an immutable key, and commits a durable processing job. The student proceeds without waiting for transcription, audio analysis, or Ollama evaluation.
-6. One local worker processes answer jobs sequentially. It stores transcription and audio analysis before evaluation, retries transient failures, and marks exhausted/unusable work for teacher review. Skipped and unanswered questions are also marked for review.
+5. On submission, the backend validates ownership and the assigned current question, stores the recording under an immutable key, and commits a durable processing job. The student proceeds without waiting for transcription, audio analysis, or dual-model evaluation.
+6. One local worker processes answer jobs sequentially. It stores transcription and audio analysis before evaluation, runs Ollama followed by Gemini on the same original evaluation input, persists each provider result independently, retries bounded transient failures without repeating a successful provider, and marks exhausted/unusable/disputed work for teacher review. Skipped and unanswered questions are also marked for review.
 7. After the last question, the interview remains in `PROCESSING`. The report is finalized only after all accepted answer jobs are either evaluated or terminally marked for teacher review. Missing evaluations remain unavailable; they are never treated as zero.
 8. The student and authorized teacher/admin can read the finalized report; teachers/admins can add review feedback and score overrides.
 
@@ -320,7 +320,7 @@ Microphone access requires a supported browser and a secure context (localhost i
 
 - The active backend environment now uses `backend/queme.db` (SQLite), and its schema plus baseline admin/course/rubric data have been initialized locally. The previous cloud database was not reachable and its records were not copied.
 - S3 is selected for audio, but the AWS key values are currently blank and bucket existence/access have not been verified. Audio uploads will fail until valid AWS credentials are configured and the bucket is available.
-- Automated question drafting, answer evaluation, and follow-up generation use only the configured local Ollama server. If it is unavailable, the interview can still complete and the report flags the answer for teacher review. No external LLM provider is used as a fallback.
+- Automated question drafting and follow-up generation use the configured local Ollama server. Answer evaluation uses sequential independent Ollama and Gemini calls by default; provider results and comparison status are saved separately in the answer evaluation JSON. A failed or disputed comparison remains pending teacher review. Set `EVALUATION_MODE=single_provider` with `EVALUATION_PROVIDER=ollama` or `gemini` for the legacy single-provider path. Gemini receives transcripts, so review Google's applicable data-use terms before enabling evaluation.
 - Interview reports aggregate saved per-question results; the current application does not make an additional LLM call for an interview-level narrative summary. Adaptive difficulty is not currently part of the interview-session flow.
 - Transcription and audio analysis depend on the configured `faster-whisper` model/runtime. A missing or unusable transcript can result in teacher-review status.
 - Answer transcription, audio analysis, and evaluation run through a persistent single-worker queue after the recording and job are committed. The API exposes processing status through the authenticated interview session.

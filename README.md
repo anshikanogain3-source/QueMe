@@ -205,6 +205,12 @@ The backend tests use temporary/in-memory test databases and mock external infer
 | `FRONTEND_ORIGIN` | No | Allowed browser origin; defaults to `http://localhost:5173`. |
 | `OLLAMA_BASE_URL` | No | Local Ollama API base; defaults to `http://localhost:11434`. |
 | `OLLAMA_MODEL` | No | Local chat model; defaults to `qwen3:1.7b`. |
+| `EVALUATION_MODE` | No | `dual_sequential` by default. `single_provider` uses `EVALUATION_PROVIDER` for legacy single-provider evaluation. |
+| `EVALUATION_PROVIDER` | No | Legacy single-provider selection (`ollama` or `gemini`) when `EVALUATION_MODE=single_provider`. Question generation and follow-ups always use Ollama. |
+| `GEMINI_API_KEY` | For Gemini | Google AI Studio API key; backend only. |
+| `GEMINI_EVALUATION_MODEL` | No | Gemini evaluation model; defaults to `gemini-3.5-flash-lite` (available on the Gemini API Free Tier). |
+| `GEMINI_EVALUATION_TIMEOUT` | No | Gemini request timeout in seconds; defaults to 30. |
+| `DUAL_EVALUATION_BUDGET_SECONDS` | No | Worker health/evaluation budget for sequential provider calls; defaults to 750 seconds. |
 | `SMTP_HOST`, `SMTP_FROM` | For password reset | SMTP server and sender address used to deliver reset links. |
 | `SMTP_PORT` | No | SMTP port; defaults to 587 (STARTTLS). Set `SMTP_USE_SSL=true` for implicit TLS. |
 | `SMTP_USERNAME`, `SMTP_PASSWORD` | No | SMTP credentials when authentication is required. |
@@ -214,7 +220,22 @@ The backend tests use temporary/in-memory test databases and mock external infer
 | `STORAGE_LOCAL_DIR` | No | Local answer storage directory; defaults to `backend/uploads`. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | Only for R2 | Cloudflare R2 account, credentials, and bucket. |
 
-Question drafting, answer evaluation, and follow-up generation use the configured local Ollama server. If Ollama is unavailable, the interview can still finish and the report may request teacher review. `faster-whisper` is included in `backend/requirements.txt`; its configured model may download on first use. Local storage is the code default; S3 and R2 are also supported. With `STORAGE_BACKEND=r2`, the four R2 settings above are required, and private answer playback is served through the authenticated API.
+Question drafting and follow-up generation continue to use the configured local Ollama server. In `dual_sequential` mode (the default), every usable answer is evaluated first by Ollama and then independently by Gemini using the same question, transcript, expected concepts, reference answer, and rubric. Neither model receives the other's output. The backend compares their results; disagreement, incomplete output, or provider failure requires teacher review. Agreement does not prove factual correctness, and the existing positive-score teacher-review safeguard remains in force. Gemini receives student transcripts, so configure and review Google's applicable data-use terms before enabling this mode. No audio, camera images, or student names are sent to Gemini. Provider logs record sanitized status and error categories, not prompts, transcripts, or API keys. Keep `GEMINI_API_KEY` in backend-only configuration. `EVALUATION_MODE=single_provider` retains the legacy `EVALUATION_PROVIDER=ollama|gemini` choice. `faster-whisper` is included in `backend/requirements.txt`; its configured model may download on first use. Local storage is the code default; S3 and R2 are also supported. With `STORAGE_BACKEND=r2`, the four R2 settings above are required, and private answer playback is served through the authenticated API.
+
+`gemini-3.5-flash-lite` supports structured JSON output and is listed with free standard input/output pricing. Google's per-project quotas vary and can still produce HTTP 429 responses. Transient rate limits get a short request retry and bounded job retries; recognized quota-exhaustion failures go to teacher review without retries. The system never switches to a paid or older model automatically. Check the [model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite), [pricing](https://ai.google.dev/gemini-api/docs/pricing), [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), and [structured output guide](https://ai.google.dev/gemini-api/docs/structured-output) for current details.
+
+For sequential Ollama and Gemini answer evaluation, set `EVALUATION_MODE=dual_sequential` and `GEMINI_API_KEY` in the backend environment. On Windows PowerShell, for the current terminal session:
+
+```powershell
+Set-Location .\backend
+$env:EVALUATION_MODE = "dual_sequential"
+$env:GEMINI_API_KEY = "your-key"
+$env:GEMINI_EVALUATION_MODEL = "gemini-3.5-flash-lite"
+python -m pip install -r requirements.txt
+flask --app run.py run
+```
+
+In a second PowerShell terminal, set the same environment variables and run `flask --app run.py process-answer-jobs` to start the answer worker. To use legacy single-provider evaluation, set `$env:EVALUATION_MODE = "single_provider"` and `$env:EVALUATION_PROVIDER = "ollama"` or `"gemini"` in both terminals. Environment variables set this way last for the current terminal session; use the root `.env` for persistent local configuration. The Gemini key remains in backend environment configuration and must not be committed.
 
 ## Frontend and browser behavior
 

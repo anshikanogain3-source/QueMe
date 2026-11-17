@@ -14,3 +14,4 @@ reportlab
 openpyxl==3.1.5
 boto3==1.35.36
 gunicorn==23.0.0
+google-genai>=1.75,<2.0
